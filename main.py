@@ -9,6 +9,7 @@ def main():
     parser.add_argument("-c", "--cert", help="Path to .p12/.pfx certificate file")
     parser.add_argument("-p", "--password", help="Certificate password")
     parser.add_argument("-o", "--output", help="Path to output signed PDF file")
+    parser.add_argument("--visible", action="store_true", help="Add visible signature stamp")
 
     args = parser.parse_args()
 

@@ -2,3 +2,5 @@ customtkinter
 endesive
 cryptography
 Pillow
+pypdf
+reportlab

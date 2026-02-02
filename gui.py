@@ -55,6 +55,11 @@ class App(customtkinter.CTk):
         self.pass_entry = customtkinter.CTkEntry(self.frame, show="*", width=200)
         self.pass_entry.grid(row=2, column=1, padx=10, pady=10, sticky="w")
 
+        # Visible Signature Checkbox
+        self.visible_var = customtkinter.BooleanVar(value=False)
+        self.visible_checkbox = customtkinter.CTkCheckBox(self.frame, text="Add Visible Signature", variable=self.visible_var)
+        self.visible_checkbox.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+
         # Action Button
         self.sign_button = customtkinter.CTkButton(self, text="Sign Document", command=self.start_signing, height=40, font=customtkinter.CTkFont(size=16, weight="bold"), state="disabled")
         self.sign_button.pack(pady=20)
@@ -91,15 +96,17 @@ class App(customtkinter.CTk):
         self.status_label.configure(text="Signing...", text_color="orange")
         self.update()
 
-        # Run in thread to not freeze UI
-        threading.Thread(target=self.perform_signing, args=(password,), daemon=True).start()
+        visible = self.visible_var.get()
 
-    def perform_signing(self, password):
+        # Run in thread to not freeze UI
+        threading.Thread(target=self.perform_signing, args=(password, visible), daemon=True).start()
+
+    def perform_signing(self, password, visible):
         try:
             base, ext = os.path.splitext(self.input_file)
             output_file = f"{base}_signed{ext}"
             
-            sign_pdf(self.input_file, self.cert_file, password, output_file)
+            sign_pdf(self.input_file, self.cert_file, password, output_file, visible=visible)
             
             self.after(0, lambda: self.signing_success(output_file))
         except Exception as e:

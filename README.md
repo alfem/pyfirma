@@ -32,6 +32,8 @@ python main.py
 
 Esto abrirá la ventana de la aplicación donde podrás seleccionar el archivo PDF, el certificado y realizar la firma de manera visual.
 
+Puede seleccionar la casilla **"Add Visible Signature"** para añadir un sello visible en la primera página del documento con el nombre del firmante y la fecha.
+
 ### Línea de Comandos
 
 También es posible utilizar pyfirma desde la terminal para automatizar procesos. Los argumentos disponibles son:
@@ -40,12 +42,13 @@ También es posible utilizar pyfirma desde la terminal para automatizar procesos
 - `-c`, `--cert`: Ruta al archivo del certificado (.p12 o .pfx).
 - `-p`, `--password`: Contraseña del certificado.
 - `-o`, `--output`: (Opcional) Ruta donde se guardará el PDF firmado.
+- `--visible`: (Opcional) Añade un sello visible con el nombre y fecha en la primera página.
 
 
 **Ejemplo de uso:**
 
 ```bash
-python main.py -i documento.pdf -c certificado.p12 -p 12345 -o documento_firmado.pdf
+python main.py -i documento.pdf -c certificado.p12 -p 12345 -o documento_firmado.pdf --visible
 ```
 ### Pruebas
 
