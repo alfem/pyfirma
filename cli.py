@@ -35,7 +35,8 @@ def run_cli_mode(args):
     
     try:
         visible = getattr(args, 'visible', False)
-        sign_pdf(input_pdf, cert_path, password, output_pdf, visible=visible)
+        vertical_left = getattr(args, 'vertical_left', False)
+        sign_pdf(input_pdf, cert_path, password, output_pdf, visible=visible, vertical_left=vertical_left)
         print(f"Success! Signed file saved to: {output_pdf}")
     except Exception as e:
         print(f"Error during signing: {str(e)}", file=sys.stderr)

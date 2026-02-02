@@ -10,6 +10,7 @@ def main():
     parser.add_argument("-p", "--password", help="Certificate password")
     parser.add_argument("-o", "--output", help="Path to output signed PDF file")
     parser.add_argument("--visible", action="store_true", help="Add visible signature stamp")
+    parser.add_argument("--vertical-left", action="store_true", help="Place visible signature vertically on the left margin")
 
     args = parser.parse_args()
 

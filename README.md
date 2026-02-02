@@ -43,6 +43,7 @@ También es posible utilizar pyfirma desde la terminal para automatizar procesos
 - `-p`, `--password`: Contraseña del certificado.
 - `-o`, `--output`: (Opcional) Ruta donde se guardará el PDF firmado.
 - `--visible`: (Opcional) Añade un sello visible con el nombre y fecha en la primera página.
+- `--vertical-left`: (Opcional) Coloca el sello visible en el margen izquierdo, centrado verticalmente y girado 90 grados.
 
 
 **Ejemplo de uso:**

@@ -57,8 +57,14 @@ class App(customtkinter.CTk):
 
         # Visible Signature Checkbox
         self.visible_var = customtkinter.BooleanVar(value=False)
-        self.visible_checkbox = customtkinter.CTkCheckBox(self.frame, text="Add Visible Signature", variable=self.visible_var)
+        self.visible_checkbox = customtkinter.CTkCheckBox(self.frame, text="Add Visible Signature", variable=self.visible_var, command=self.toggle_visible_options)
         self.visible_checkbox.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+        
+        # Vertical Left Checkbox (Initially Disabled/Hidden)
+        self.vertical_left_var = customtkinter.BooleanVar(value=False)
+        self.vertical_left_checkbox = customtkinter.CTkCheckBox(self.frame, text="Vertical Left Margin", variable=self.vertical_left_var)
+        self.vertical_left_checkbox.grid(row=3, column=2, padx=10, pady=10, sticky="w")
+        self.vertical_left_checkbox.configure(state="disabled")
 
         # Action Button
         self.sign_button = customtkinter.CTkButton(self, text="Sign Document", command=self.start_signing, height=40, font=customtkinter.CTkFont(size=16, weight="bold"), state="disabled")
@@ -67,6 +73,13 @@ class App(customtkinter.CTk):
         # Status
         self.status_label = customtkinter.CTkLabel(self, text="Ready", text_color="gray")
         self.status_label.pack(side="bottom", pady=10)
+
+    def toggle_visible_options(self):
+        if self.visible_var.get():
+            self.vertical_left_checkbox.configure(state="normal")
+        else:
+            self.vertical_left_checkbox.configure(state="disabled")
+            self.vertical_left_var.set(False)
 
     def select_file(self):
         filename = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
@@ -97,16 +110,17 @@ class App(customtkinter.CTk):
         self.update()
 
         visible = self.visible_var.get()
+        vertical_left = self.vertical_left_var.get()
 
         # Run in thread to not freeze UI
-        threading.Thread(target=self.perform_signing, args=(password, visible), daemon=True).start()
+        threading.Thread(target=self.perform_signing, args=(password, visible, vertical_left), daemon=True).start()
 
-    def perform_signing(self, password, visible):
+    def perform_signing(self, password, visible, vertical_left):
         try:
             base, ext = os.path.splitext(self.input_file)
             output_file = f"{base}_signed{ext}"
             
-            sign_pdf(self.input_file, self.cert_file, password, output_file, visible=visible)
+            sign_pdf(self.input_file, self.cert_file, password, output_file, visible=visible, vertical_left=vertical_left)
             
             self.after(0, lambda: self.signing_success(output_file))
         except Exception as e:
