@@ -41,6 +41,10 @@ También es posible utilizar pyfirma desde la terminal para automatizar procesos
 - `-p`, `--password`: Contraseña del certificado.
 - `-o`, `--output`: (Opcional) Ruta donde se guardará el PDF firmado.
 
+### Pruebas
+
+Puedes comprobar que la firma es correcta usando la web https://valide.redsara.es/
+
 **Ejemplo de uso:**
 
 ```bash
