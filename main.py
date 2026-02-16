@@ -11,6 +11,7 @@ def main():
     parser.add_argument("-o", "--output", help="Path to output signed PDF file")
     parser.add_argument("--visible", action="store_true", help="Add visible signature stamp")
     parser.add_argument("--vertical-left", action="store_true", help="Place visible signature vertically on the left margin")
+    parser.add_argument("--all-pages", action="store_true", help="Apply visible signature to all pages (requires --visible)")
 
     args = parser.parse_args()
 

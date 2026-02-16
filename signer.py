@@ -119,10 +119,11 @@ def create_watermark(text, vertical_left=False):
     packet.seek(0)
     return packet
 
-def sign_pdf(input_pdf_path, cert_path, password, output_pdf_path, visible=False, vertical_left=False):
+def sign_pdf(input_pdf_path, cert_path, password, output_pdf_path, visible=False, vertical_left=False, all_pages=False):
     """
     Signs a PDF file with the given certificate and password.
     Optionally adds a visible signature stamp.
+    If all_pages is True, the visible signature will be added to all pages.
     """
     # Load certificate and private key
     private_key, certificate, additional_certificates = load_certificate(cert_path, password)
@@ -157,14 +158,21 @@ def sign_pdf(input_pdf_path, cert_path, password, output_pdf_path, visible=False
         original_pdf = PdfReader(io.BytesIO(data))
         pdf_writer = PdfWriter()
         
-        # Merge into the first page (index 0)
-        first_page = original_pdf.pages[0]
-        first_page.merge_page(watermark_pdf.pages[0])
-        pdf_writer.add_page(first_page)
-        
-        # Add remaining pages
-        for page_num in range(1, len(original_pdf.pages)):
-            pdf_writer.add_page(original_pdf.pages[page_num])
+        if all_pages:
+            # Apply signature to all pages
+            for page_num in range(len(original_pdf.pages)):
+                page = original_pdf.pages[page_num]
+                page.merge_page(watermark_pdf.pages[0])
+                pdf_writer.add_page(page)
+        else:
+            # Merge into the first page only (index 0)
+            first_page = original_pdf.pages[0]
+            first_page.merge_page(watermark_pdf.pages[0])
+            pdf_writer.add_page(first_page)
+            
+            # Add remaining pages without signature
+            for page_num in range(1, len(original_pdf.pages)):
+                pdf_writer.add_page(original_pdf.pages[page_num])
             
         # Write modified PDF to bytes for signing
         output_buffer = io.BytesIO()

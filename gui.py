@@ -65,6 +65,12 @@ class App(customtkinter.CTk):
         self.vertical_left_checkbox = customtkinter.CTkCheckBox(self.frame, text="Vertical Left Margin", variable=self.vertical_left_var)
         self.vertical_left_checkbox.grid(row=3, column=2, padx=10, pady=10, sticky="w")
         self.vertical_left_checkbox.configure(state="disabled")
+        
+        # All Pages Checkbox (Initially Disabled)
+        self.all_pages_var = customtkinter.BooleanVar(value=False)
+        self.all_pages_checkbox = customtkinter.CTkCheckBox(self.frame, text="Sign All Pages", variable=self.all_pages_var)
+        self.all_pages_checkbox.grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+        self.all_pages_checkbox.configure(state="disabled")
 
         # Action Button
         self.sign_button = customtkinter.CTkButton(self, text="Sign Document", command=self.start_signing, height=40, font=customtkinter.CTkFont(size=16, weight="bold"), state="disabled")
@@ -77,9 +83,12 @@ class App(customtkinter.CTk):
     def toggle_visible_options(self):
         if self.visible_var.get():
             self.vertical_left_checkbox.configure(state="normal")
+            self.all_pages_checkbox.configure(state="normal")
         else:
             self.vertical_left_checkbox.configure(state="disabled")
             self.vertical_left_var.set(False)
+            self.all_pages_checkbox.configure(state="disabled")
+            self.all_pages_var.set(False)
 
     def select_file(self):
         filename = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
@@ -111,16 +120,17 @@ class App(customtkinter.CTk):
 
         visible = self.visible_var.get()
         vertical_left = self.vertical_left_var.get()
+        all_pages = self.all_pages_var.get()
 
         # Run in thread to not freeze UI
-        threading.Thread(target=self.perform_signing, args=(password, visible, vertical_left), daemon=True).start()
+        threading.Thread(target=self.perform_signing, args=(password, visible, vertical_left, all_pages), daemon=True).start()
 
-    def perform_signing(self, password, visible, vertical_left):
+    def perform_signing(self, password, visible, vertical_left, all_pages):
         try:
             base, ext = os.path.splitext(self.input_file)
             output_file = f"{base}_signed{ext}"
             
-            sign_pdf(self.input_file, self.cert_file, password, output_file, visible=visible, vertical_left=vertical_left)
+            sign_pdf(self.input_file, self.cert_file, password, output_file, visible=visible, vertical_left=vertical_left, all_pages=all_pages)
             
             self.after(0, lambda: self.signing_success(output_file))
         except Exception as e:
