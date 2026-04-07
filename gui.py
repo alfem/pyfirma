@@ -1,23 +1,38 @@
 import customtkinter
 import os
+import json
+import base64
+from urllib.parse import parse_qs, urlparse
 from tkinter import filedialog, messagebox
 import threading
 from signer import sign_pdf
+try:
+    import server
+except ImportError:
+    server = None
 
 customtkinter.set_appearance_mode("System")
 customtkinter.set_default_color_theme("blue")
 
 class App(customtkinter.CTk):
-    def __init__(self):
+    def __init__(self, afirma_url=None, afirma_ports=None):
         super().__init__()
 
         self.title("PyFirma")
-        self.geometry("600x450")
+        self.geometry("700x500")
         
+        self.afirma_url = afirma_url
+        self.afirma_ports = afirma_ports
+        self.ws_server = None
+
         self.input_file = None
         self.cert_file = None
 
         self.setup_ui()
+        if self.afirma_url:
+            self.setup_interceptor_addons()
+            if self.afirma_ports and server:
+                self.ws_server = server.start_server_thread(self.afirma_ports, self.on_ws_event)
 
     def setup_ui(self):
         # Header
@@ -80,6 +95,77 @@ class App(customtkinter.CTk):
         self.status_label = customtkinter.CTkLabel(self, text="Ready", text_color="gray")
         self.status_label.pack(side="bottom", pady=10)
 
+    def setup_interceptor_addons(self):
+        # Make window bigger for interceptor
+        self.geometry("900x700")
+        
+        self.header_label.configure(text="PyFirma - AutoFirma Interceptor", text_color="#1E90FF")
+
+        self.url_label = customtkinter.CTkLabel(self, text=f"URL: {self.afirma_url}", wraplength=850, justify="left", text_color="gray")
+        self.url_label.pack(pady=5, padx=20, fill="x")
+        
+        self.logs_textbox = customtkinter.CTkTextbox(self, height=200, font=customtkinter.CTkFont(family="Courier", size=12))
+        self.logs_textbox.pack(pady=10, padx=20, fill="both", expand=True)
+        self.logs_textbox.insert("end", "Waiting for browser connection...\n\n")
+        self.logs_textbox.configure(state="disabled")
+
+        if not self.afirma_ports:
+            parsed = urlparse(self.afirma_url)
+            params = parse_qs(parsed.query)
+            try:
+                self.log_event("info", "No WebSocket ports received. URL payload:")
+                for k, v in params.items():
+                    val = v[0]
+                    try:
+                        decoded = base64.b64decode(val).decode('utf-8')
+                        self.log_event("param", f"{k} = {decoded} (base64 decoded)")
+                    except Exception:
+                        self.log_event("param", f"{k} = {val}")
+            except Exception as e:
+                self.log_event("error", str(e))
+
+    def on_ws_event(self, event_type, message):
+        # Must be called thread-safe
+        self.after(0, lambda: self.log_event(event_type, message))
+
+    def log_event(self, event_type, message):
+        if not hasattr(self, 'logs_textbox'):
+            return
+            
+        self.logs_textbox.configure(state="normal")
+        
+        if event_type == "message":
+            try:
+                if isinstance(message, bytes):
+                    message = message.decode('utf-8')
+                
+                if message.startswith("afirma://"):
+                    self.logs_textbox.insert("end", f"> [WS Payload URL]: {message}\n")
+                    parsed = urlparse(message)
+                    params = parse_qs(parsed.query)
+                    self.logs_textbox.insert("end", "  [Parsed Parameters]:\n")
+                    for k, v in params.items():
+                        val = v[0]
+                        # Try to base64 decode parameters like properties or ksb64
+                        try:
+                            decoded = base64.b64decode(val).decode('utf-8')
+                            self.logs_textbox.insert("end", f"    - {k}: {decoded} (b64 decoded)\n")
+                        except Exception:
+                            self.logs_textbox.insert("end", f"    - {k}: {val}\n")
+                    self.logs_textbox.insert("end", "\n")
+                else:
+                    data = json.loads(message)
+                    formatted = json.dumps(data, indent=2)
+                    self.logs_textbox.insert("end", f"> [WS Payload Received]:\n{formatted}\n\n")
+            except Exception:
+                self.logs_textbox.insert("end", f"> [WS Payload Received]: {message}\n\n")
+        else:
+            self.logs_textbox.insert("end", f"* [{event_type.upper()}] {message}\n")
+            
+        self.logs_textbox.see("end")
+        self.logs_textbox.configure(state="disabled")
+
+
     def toggle_visible_options(self):
         if self.visible_var.get():
             self.vertical_left_checkbox.configure(state="normal")
@@ -141,8 +227,21 @@ class App(customtkinter.CTk):
         messagebox.showinfo("Success", f"File signed successfully!\nSaved as: {os.path.basename(output_file)}")
         self.status_label.configure(text="Finished successfully", text_color="green")
         self.sign_button.configure(state="normal")
-        # Clear password for security? detailed implementation choice. 
-        # self.pass_entry.delete(0, 'end') 
+
+        # Reply to WSS if active
+        if self.ws_server:
+            try:
+                with open(output_file, 'rb') as f:
+                    pdf_data = f.read()
+                
+                b64 = base64.b64encode(pdf_data).decode('utf-8')
+                # AutoFirma expects the signature value encoded as Base64. 
+                # For PDF (PAdES), sending the signed document base64 works.
+                # AutoScript specifically replaces - and _ when decoding.
+                self.ws_server.send_response(b64)
+                self.log_event("info", "Sent signed document back via WebSocket.")
+            except Exception as e:
+                self.log_event("error", f"Failed to send WS response: {e}")
 
     def signing_error(self, error_msg):
         messagebox.showerror("Signing Error", error_msg)

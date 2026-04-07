@@ -1,9 +1,27 @@
 import sys
 import argparse
+from urllib.parse import urlparse, parse_qs
 from gui import App
 from cli import run_cli_mode
 
 def main():
+    # Detect if we are called as a generic URL handler for afirma://
+    if len(sys.argv) == 2 and sys.argv[1].startswith("afirma://"):
+        afirma_url = sys.argv[1]
+        parsed = urlparse(afirma_url)
+        params = parse_qs(parsed.query)
+        
+        afirma_ports = None
+        # Support either websocket or service modes (both pass ports)
+        if parsed.netloc in ("websocket", "service") or (parsed.path in ("websocket", "service")):
+            if 'ports' in params:
+                ports_str = params['ports'][0]
+                afirma_ports = [int(p.strip()) for p in ports_str.split(',') if p.strip().isdigit()]
+        
+        app = App(afirma_url=afirma_url, afirma_ports=afirma_ports)
+        app.mainloop()
+        return
+
     parser = argparse.ArgumentParser(description="PyFirma - Python PDF Signer")
     parser.add_argument("-i", "--input", help="Path to input PDF file")
     parser.add_argument("-c", "--cert", help="Path to .p12/.pfx certificate file")
