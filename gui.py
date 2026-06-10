@@ -17,6 +17,11 @@ except ImportError:
     server = None
     parse_afirma_url = None
 
+try:
+    from http_server import start_http_server_thread
+except ImportError:
+    start_http_server_thread = None
+
 customtkinter.set_appearance_mode("System")
 customtkinter.set_default_color_theme("blue")
 
@@ -37,18 +42,29 @@ class App(customtkinter.CTk):
         self.pending_sign_request = False  # True when browser sent sign w/o dat (manual flow)
         self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
+        # Thread-safe storage for HTTP (JSSocket) handler
+        self._http_cert_file = None
+        self._http_password = ""
+
         self.load_config()
         self.setup_ui()
+        self.http_server = None
         if self.afirma_url:
             self.setup_interceptor_addons()
             if self.afirma_ports and server:
                 self.ws_server = server.start_server_thread(self.afirma_ports, self.on_ws_event)
+                # Also start HTTPS server on another port for JSSocket mode
+                if start_http_server_thread:
+                    self.http_server = start_http_server_thread(
+                        self.afirma_ports, self.on_ws_event,
+                        op_handler=self.process_http_operation)
             # Poll for redirects from duplicate instance attempts
             self.check_redirect_file()
         
         # Update labels if loaded from config
         if self.cert_file and os.path.exists(self.cert_file):
             self.cert_path_label.configure(text=os.path.basename(self.cert_file), text_color="white")
+            self._http_cert_file = self.cert_file  # sync for HTTP handler
             self.check_ready()
 
     def load_config(self):
@@ -113,6 +129,9 @@ class App(customtkinter.CTk):
         # Pre-fill password from cache
         if self.cached_password:
             self.pass_entry.insert(0, self.cached_password)
+        # Auto-sync password to thread-safe variable for HTTP handler
+        self._http_password = self.cached_password
+        self.pass_entry.bind("<KeyRelease>", lambda e: self._on_password_changed())
 
         self.cache_pass_var = customtkinter.BooleanVar(value=bool(self.cached_password))
         self.cache_pass_checkbox = customtkinter.CTkCheckBox(
@@ -229,8 +248,12 @@ class App(customtkinter.CTk):
                             self.afirma_ports = ports
                             self.ws_server = server.start_server_thread(
                                 ports, self.on_ws_event)
+                            if start_http_server_thread:
+                                self.http_server = start_http_server_thread(
+                                    ports, self.on_ws_event,
+                                    op_handler=self.process_http_operation)
                             self.log_event("event",
-                                f"Petición redirigida: nuevo servidor WS en puertos {ports}")
+                                f"Petición redirigida: nuevos servidores en puertos {ports}")
         except Exception:
             pass
         # Check again in 1 second
@@ -479,12 +502,11 @@ class App(customtkinter.CTk):
 
             fmt = params.get('format', 'PAdES').upper()
 
-            if fmt == 'XADES':
+            if fmt.startswith('XADES'):
                 # --- XAdES (XML) signing ---
                 from xades_signer import sign_xades
 
                 signed_data = sign_xades(pdf_data, private_key, certificate)
-
                 b64_urlsafe = self._encode_urlsafe_b64(signed_data)
                 b64_response = "|" + b64_urlsafe
 
@@ -496,7 +518,28 @@ class App(customtkinter.CTk):
                 if self.ws_server:
                     self.ws_server.send_response(b64_response)
 
-            elif fmt in ('PADES', 'PDF'):
+            elif fmt.startswith('CADES'):
+                # --- CAdES-BES via endesive.plain ---
+                from endesive import plain
+                from asn1crypto import cms
+                signed_data = plain.sign(
+                    pdf_data, private_key, certificate,
+                    additional_certificates, hashalgo='sha256', attrs=True)
+                # Embed data (converts detached → attached/explicit)
+                ci = cms.ContentInfo.load(signed_data)
+                ci['content']['encap_content_info']['content'] = pdf_data
+                signed_data = ci.dump()
+
+                b64_urlsafe = self._encode_urlsafe_b64(signed_data)
+                b64_response = "|" + b64_urlsafe
+
+                self.after(0, lambda d=signed_data: self.log_event(
+                    "event", f"CAdES firmado y enviado ({len(d)} bytes)"))
+
+                if self.ws_server:
+                    self.ws_server.send_response(b64_response)
+
+            elif fmt.startswith('PADES') or fmt == 'PDF':
                 # --- PAdES (PDF) signing ---
                 import datetime
                 import endesive.pdf.cms
@@ -647,9 +690,149 @@ class App(customtkinter.CTk):
         filename = filedialog.askopenfilename(filetypes=[("Archivos de Certificado", "*.p12 *.pfx")])
         if filename:
             self.cert_file = filename
+            self._http_cert_file = filename  # sync for HTTP handler
             self.cert_path_label.configure(text=os.path.basename(filename), text_color="white")
             self.save_config()
             self.check_ready()
+
+    def _on_password_changed(self):
+        """Keep thread-safe password var in sync with the entry widget."""
+        self._http_password = self.pass_entry.get()
+
+    def process_http_operation(self, op, url):
+        """Process an afirma:// operation synchronously for HTTP (JSSocket) mode.
+
+        Called from the HTTP server thread. Returns bytes or string result.
+        NOTE: _http_password and _http_cert_file are kept in sync from the main
+        thread (via KeyRelease binding and select_cert), so no tkinter calls here.
+        """
+        import urllib.parse
+
+        def _dbg(msg):
+            try:
+                with open("/tmp/pyfirma_http.log", "a") as f:
+                    f.write(f"[PROC_HTTP] {msg}\n")
+            except Exception:
+                pass
+
+        _dbg(f"START op={op} url_len={len(url)}")
+
+        # In JSSocket mode, dat IS URL-encoded.
+        raw_dat = None
+        try:
+            parsed = urllib.parse.urlparse(url.split('\n')[0])
+            qs_params = urllib.parse.parse_qs(parsed.query)
+            if 'dat' in qs_params:
+                raw_dat = qs_params['dat'][0]
+            _dbg(f"parse_qs dat: {raw_dat[:80] if raw_dat else 'None'}...")
+        except Exception as e:
+            _dbg(f"parse_qs exception: {e}")
+            for prefix in ('&dat=', '?dat='):
+                idx = url.find(prefix)
+                if idx != -1:
+                    raw_dat = url[idx + len(prefix):]
+                    break
+
+        data_to_sign = None
+
+        if raw_dat:
+            if raw_dat.startswith('http://') or raw_dat.startswith('https://'):
+                _dbg(f"dat is URL, downloading...")
+                try:
+                    import urllib.request
+                    with urllib.request.urlopen(raw_dat, timeout=30) as resp:
+                        data_to_sign = resp.read()
+                    _dbg(f"downloaded {len(data_to_sign)} bytes")
+                except Exception as e:
+                    _dbg(f"download failed: {e}")
+                    return f"SAF_ERROR:Download failed: {e}"
+            else:
+                _dbg(f"decoding dat as base64...")
+                data_to_sign = self._decode_urlsafe_b64(raw_dat)
+                _dbg(f"decoded: {len(data_to_sign) if data_to_sign else 'None'} bytes")
+                if data_to_sign is None:
+                    return "SAF_ERROR:Failed to decode dat"
+        else:
+            _dbg("raw_dat is None")
+
+        _dbg(f"data_to_sign={len(data_to_sign) if data_to_sign else 'None'}, "
+             f"cert={bool(self._http_cert_file)}, pwd_len={len(self._http_password)}")
+
+        if op == 'save':
+            if data_to_sign:
+                self.after(0, lambda: self._trigger_save_dialog(
+                    data_to_sign, 'firma', 'pdf'))
+                return "OK"
+            return "SAF_NO_DATA"
+
+        # Sign operations
+        if data_to_sign is None:
+            self.pending_sign_request = True
+            return ""
+
+        password = self._http_password
+        cert_file = self._http_cert_file
+        if not password or not cert_file:
+            return "SAF_ERROR:No certificate loaded"
+
+        # Sign based on format
+        from signer import load_certificate
+        private_key, certificate, additional_certs = load_certificate(
+            cert_file, password
+        )
+
+        # Get format from URL
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(url.split('\n')[0])
+        params = parse_qs(parsed.query)
+        fmt = params.get('format', ['PAdES'])[0].upper()
+
+        _dbg(f"signing with fmt='{fmt}'")
+
+        if fmt.startswith('XADES'):
+            from xades_signer import sign_xades
+            signed_data = sign_xades(data_to_sign, private_key, certificate)
+
+        elif fmt.startswith('CADES'):
+            # CAdES-BES via endesive.plain (produces detached CMS).
+            # Post-process to embed the data (attached/explicit mode).
+            from endesive import plain
+            from asn1crypto import cms
+
+            detached = plain.sign(
+                data_to_sign, private_key, certificate,
+                additional_certs, hashalgo='sha256', attrs=True)
+
+            # Parse and embed the data in EncapsulatedContentInfo
+            ci = cms.ContentInfo.load(detached)
+            sd = ci['content']
+            eci = sd['encap_content_info']
+            # Set the content field to embed the original data
+            eci['content'] = data_to_sign
+            signed_data = ci.dump()
+            _dbg(f"CAdES signed (attached): {len(signed_data)} bytes")
+
+        elif fmt.startswith('PADES') or fmt == 'PDF':
+            import datetime
+            import endesive.pdf.cms
+            date = datetime.datetime.now(datetime.timezone.utc)
+            dct = {
+                "sigflags": 3, "sigpage": 0,
+                "contact": "", "location": "",
+                "signingdate": date.strftime('D:%Y%m%d%H%M%SZ'),
+                "reason": "Signed with PyFirma",
+            }
+            sig = endesive.pdf.cms.sign(
+                data_to_sign, dct, private_key, certificate, additional_certs, 'sha256'
+            )
+            signed_data = data_to_sign + sig
+
+        else:
+            return f"SAF_ERROR:Unsupported format: {fmt}"
+
+        # Encode and return with '|' prefix (same as WSS mode)
+        b64 = self._encode_urlsafe_b64(signed_data)
+        return "|" + b64
 
     def on_cache_pass_toggle(self):
         """Save or clear cached password when checkbox is toggled."""
