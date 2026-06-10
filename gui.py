@@ -477,62 +477,83 @@ class App(customtkinter.CTk):
                 cert_file, password
             )
 
-            # Sign the PDF
-            import datetime
-            import endesive.pdf.cms
+            fmt = params.get('format', 'PAdES').upper()
 
-            date = datetime.datetime.now(datetime.timezone.utc)
-            date_str = date.strftime('D:%Y%m%d%H%M%SZ')
+            if fmt == 'XADES':
+                # --- XAdES (XML) signing ---
+                from xades_signer import sign_xades
 
-            dct = {
-                "sigflags": 3,
-                "sigpage": 0,
-                "contact": "",
-                "location": "",
-                "signingdate": date_str,
-                "reason": "Signed with PyFirma",
-            }
+                signed_data = sign_xades(pdf_data, private_key, certificate)
 
-            signature = endesive.pdf.cms.sign(
-                pdf_data, dct, private_key, certificate,
-                additional_certificates, 'sha256'
-            )
+                b64_urlsafe = self._encode_urlsafe_b64(signed_data)
+                b64_response = "|" + b64_urlsafe
 
-            # Build the signed PDF: original data + PAdES signature
-            signed_pdf = pdf_data + signature
+                self.after(0, lambda d=signed_data, b=b64_urlsafe: self.log_event(
+                    "event",
+                    f"XAdES firmado y enviado ({len(d)} bytes, "
+                    f"{len(b)} chars base64)"))
 
-            # Encode as URL-safe base64 for autoscript.js compatibility.
-            # autoscript.js's processSignResponse does:
-            #   Base64.decode(data, true).replace(/\-/g, "+").replace(/\_/g, "/")
-            # which expects URL-safe base64 encoding.
-            b64_urlsafe = self._encode_urlsafe_b64(signed_pdf)
-
-            self.after(0, lambda: self.log_event(
-                "event",
-                f"PDF firmado enviado de vuelta ({len(signed_pdf)} bytes, "
-                f"{len(b64_urlsafe)} chars base64)"))
-
-            # Prepend '|' to mimic Java AutoFirma's signature|certificate format.
-            # autoscript.js splits by '|': part1→certificate(2nd cb param),
-            # part2→signature(1st cb param). With "|b64", the signed data
-            # arrives as the 1st callback param, and stays as base64 text
-            # (not decoded to binary), avoiding UTF-8 corruption in the save URL.
-            b64_response = "|" + b64_urlsafe
-
-            # Handle signandsave: the browser expects a save dialog after signing
-            if op == "signandsave":
-                # For signandsave, the response is different — the native app saves
-                # locally and returns OK. We emulate this by triggering a save dialog
-                # after sending the signed data back.
                 if self.ws_server:
                     self.ws_server.send_response(b64_response)
-                self.after(0, lambda: self._trigger_save_dialog(
-                    signed_pdf,
-                    params.get('filename', 'firma'),
-                    params.get('format', 'pdf').lower()))
+
+            elif fmt in ('PADES', 'PDF'):
+                # --- PAdES (PDF) signing ---
+                import datetime
+                import endesive.pdf.cms
+
+                date = datetime.datetime.now(datetime.timezone.utc)
+                date_str = date.strftime('D:%Y%m%d%H%M%SZ')
+
+                dct = {
+                    "sigflags": 3,
+                    "sigpage": 0,
+                    "contact": "",
+                    "location": "",
+                    "signingdate": date_str,
+                    "reason": "Signed with PyFirma",
+                }
+
+                signature = endesive.pdf.cms.sign(
+                    pdf_data, dct, private_key, certificate,
+                    additional_certificates, 'sha256'
+                )
+
+                signed_data = pdf_data + signature
+                b64_urlsafe = self._encode_urlsafe_b64(signed_data)
+                b64_response = "|" + b64_urlsafe
+
+                self.after(0, lambda d=signed_data, b=b64_urlsafe: self.log_event(
+                    "event",
+                    f"PDF firmado enviado de vuelta ({len(d)} bytes, "
+                    f"{len(b)} chars base64)"))
+
+                # Handle signandsave for PAdES
+                if op == "signandsave":
+                    if self.ws_server:
+                        self.ws_server.send_response(b64_response)
+                    self.after(0, lambda: self._trigger_save_dialog(
+                        signed_data,
+                        params.get('filename', 'firma'),
+                        'pdf'))
+                    return
+
+                if self.ws_server:
+                    self.ws_server.send_response(b64_response)
+
+            elif fmt == 'CADES':
+                # --- CAdES (CMS) signing ---
+                self.after(0, lambda: self.log_event(
+                    "error", "CAdES no implementado aún"))
+                if self.ws_server:
+                    self.ws_server.send_response("SAF_ERROR:CAdES not yet implemented")
+                return
+
             else:
+                self.after(0, lambda: self.log_event(
+                    "error", f"Formato de firma desconocido: {fmt}"))
                 if self.ws_server:
-                    self.ws_server.send_response(b64_response)
+                    self.ws_server.send_response(f"SAF_ERROR:Unknown format {fmt}")
+                return
 
         except ValueError as e:
             self.after(0, lambda: messagebox.showerror(
