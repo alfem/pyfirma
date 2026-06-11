@@ -1,6 +1,6 @@
 # Instalación y configuración de PyFirma en Ubuntu 24.04
 
-Guía detallada para instalar PyFirma en Ubuntu 24.04 y configurarlo
+Guía para instalar (manualmente) PyFirma en Ubuntu 24.04 y configurarlo
 como aplicación nativa de firma electrónica compatible con el
 protocolo `afirma://` en Firefox y Chrome/Chromium.
 
@@ -30,7 +30,7 @@ sudo apt install -y python3-tk python3-venv python3-pip
 
 ---
 
-## 3. Descarga y entorno virtual
+## 3. Descarga y preparación de un entorno virtual
 
 ```bash
 # Clonar o copiar el proyecto en ~/pyfirma
