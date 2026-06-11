@@ -619,4 +619,4 @@ El visor de logs de la GUI (modo interceptor) muestra:
 
 ---
 
-*Documento generado a partir del código fuente de PyFirma — junio 2026.*
+
