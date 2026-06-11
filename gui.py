@@ -1327,9 +1327,20 @@ class App(customtkinter.CTk):
 
         password = self._http_password
         cert_file = self._http_cert_file
-        if not password or not cert_file:
+
+        if not cert_file:
+            self.after(0, lambda: self.log_event(
+                "error", "Petición de firma rechazada: no hay certificado cargado."))
+            return "SAF_ERROR:No certificate loaded"
+        if not password:
+            self.after(0, lambda: self.log_event(
+                "error", "Petición de firma rechazada: falta la contraseña."))
+            self.after(0, lambda: self.status_label.configure(
+                text="Introduzca la contraseña del certificado", text_color="orange"))
             return "SAF_ERROR:No certificate loaded"
         if not self.password_confirmed and not self.cache_pass_var.get():
+            self.after(0, lambda: self.log_event(
+                "error", "Petición de firma rechazada: contraseña no confirmada."))
             return "SAF_ERROR:Password not confirmed"
 
         # Cargar certificado
