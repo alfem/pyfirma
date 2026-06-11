@@ -118,6 +118,9 @@ class App(customtkinter.CTk):
         self.load_config()   # Cargar configuración persistente
         # La contraseña se considera confirmada si viene de caché
         self.password_confirmed = bool(self.cached_password)
+        # Evento para desbloquear peticiones HTTP pendientes cuando el
+        # usuario termina de cargar el certificado y confirmar la clave.
+        self._setup_ready = threading.Event()
         self.setup_ui()      # Construir la interfaz gráfica
 
         if self.afirma_url:
@@ -1327,28 +1330,51 @@ class App(customtkinter.CTk):
 
         password = self._http_password
         cert_file = self._http_cert_file
+        import time as _time
 
+        # --- Esperar hasta que el usuario cargue el certificado ---
         if not cert_file:
+            self._setup_ready.clear()
             self.after(0, lambda: self.log_event(
                 "event", "Petición de firma en espera: falta certificado."))
             self.after(0, lambda: self.status_label.configure(
                 text="Seleccione un certificado (.p12/.pfx)", text_color="orange"))
             self.after(0, self.select_cert)  # Abrir automáticamente el diálogo
-            return ""  # Vacío = no respondemos aún, el navegador reintentará
+            if not self._setup_ready.wait(timeout=120):
+                return "SAF_ERROR:Timeout waiting for certificate"
+            # Releer tras despertar (el usuario pudo cancelar el diálogo)
+            cert_file = self._http_cert_file
+            if not cert_file:
+                return "SAF_ERROR:No certificate loaded"
+
+        # --- Esperar hasta que el usuario introduzca la contraseña ---
         if not password:
+            self._setup_ready.clear()
             self.after(0, lambda: self.log_event(
                 "event", "Petición de firma en espera: falta contraseña."))
             self.after(0, lambda: self.status_label.configure(
-                text="Introduzca y confirme la contraseña del certificado",
+                text="Introduzca la contraseña del certificado",
                 text_color="orange"))
-            return ""  # Vacío = no respondemos aún
+            if not self._setup_ready.wait(timeout=120):
+                return "SAF_ERROR:Timeout waiting for password"
+            password = self._http_password
+            if not password:
+                return "SAF_ERROR:No certificate loaded"
+
+        # --- Esperar hasta que el usuario confirme la contraseña ---
         if not self.password_confirmed and not self.cache_pass_var.get():
+            self._setup_ready.clear()
             self.after(0, lambda: self.log_event(
                 "event", "Petición de firma en espera: contraseña sin confirmar."))
             self.after(0, lambda: self.status_label.configure(
                 text="Pulse 'Aceptar' para confirmar la contraseña",
                 text_color="orange"))
-            return ""  # Vacío = no respondemos aún
+            if not self._setup_ready.wait(timeout=120):
+                return "SAF_ERROR:Timeout waiting for password confirmation"
+            # Releer por si cambió mientras esperábamos
+            if not self.password_confirmed and not self.cache_pass_var.get():
+                return "SAF_ERROR:Password not confirmed"
+            password = self._http_password
 
         # Cargar certificado
         from signer import load_certificate
@@ -1476,6 +1502,8 @@ class App(customtkinter.CTk):
             )
             self.save_config()
             self.check_ready()
+        # Despertar al hilo HTTP tanto si se eligió certificado como si se canceló
+        self._setup_ready.set()
 
     def _on_password_changed(self):
         """
@@ -1493,6 +1521,10 @@ class App(customtkinter.CTk):
             self.password_confirmed = False
             self.confirm_pass_button.grid()
             self.sign_button.configure(state="disabled")
+        # Si el hilo HTTP espera por una contraseña, despertarlo
+        # para que reevalúe (avanzará hasta necesitar confirmación)
+        if self._http_password:
+            self._setup_ready.set()
 
     def _on_confirm_password(self):
         """
@@ -1501,10 +1533,15 @@ class App(customtkinter.CTk):
         Oculta el botón de confirmación, marca la contraseña como
         validada y sincroniza la variable thread-safe para los
         manejadores HTTP/WS.
+
+        Si hay un certificado cargado, despierta al hilo HTTP que
+        estuviera esperando para firmar.
         """
         self.password_confirmed = True
         self._http_password = self.pass_entry.get()
         self.confirm_pass_button.grid_remove()
+        if self._http_cert_file:
+            self._setup_ready.set()
         self.check_ready()
 
     def on_cache_pass_toggle(self):
@@ -1519,6 +1556,9 @@ class App(customtkinter.CTk):
             self.password_confirmed = True
             self._http_password = self.pass_entry.get()
             self.confirm_pass_button.grid_remove()
+            # Despertar al hilo HTTP si esperaba confirmación
+            if self._http_cert_file and self._http_password:
+                self._setup_ready.set()
         else:
             self.password_confirmed = False
             self.confirm_pass_button.grid()
