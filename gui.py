@@ -165,6 +165,9 @@ class App(customtkinter.CTk):
                     config = json.load(f)
                     self.cert_file = config.get("last_cert_path")
                     self.cached_password = config.get("last_password", "")
+                # Sincronizar la variable thread-safe para el manejador HTTP
+                if self.cert_file and os.path.exists(self.cert_file):
+                    self._http_cert_file = self.cert_file
             except Exception:
                 self.cached_password = ""
         else:
@@ -1260,7 +1263,11 @@ class App(customtkinter.CTk):
             except Exception:
                 pass
 
-        _dbg(f"START op={op} url_len={len(url)}")
+        _dbg(f"START op={op} url_len={len(url)} cert={bool(self._http_cert_file)} pwd_len={len(self._http_password)} confirmed={self.password_confirmed} cache={self.cache_pass_var.get()}")
+
+        # Limpiar cualquier mensaje de estado anterior
+        self.after(0, lambda: self.status_label.configure(
+            text="Procesando petición del navegador...", text_color="gray"))
 
         # En modo JSSocket, 'dat' SÍ está codificado en URL.
         raw_dat = None
@@ -1334,6 +1341,7 @@ class App(customtkinter.CTk):
 
         # --- Esperar hasta que el usuario cargue el certificado ---
         if not cert_file:
+            _dbg("WAIT_CERT: blocking until cert loaded")
             self._setup_ready.clear()
             self.after(0, lambda: self.log_event(
                 "event", "Petición de firma en espera: falta certificado."))
@@ -1341,14 +1349,18 @@ class App(customtkinter.CTk):
                 text="Seleccione un certificado (.p12/.pfx)", text_color="orange"))
             self.after(0, self.select_cert)  # Abrir automáticamente el diálogo
             if not self._setup_ready.wait(timeout=120):
+                _dbg("WAIT_CERT: timeout")
                 return "SAF_ERROR:Timeout waiting for certificate"
+            _dbg("WAIT_CERT: woke up")
             # Releer tras despertar (el usuario pudo cancelar el diálogo)
             cert_file = self._http_cert_file
             if not cert_file:
+                _dbg("WAIT_CERT: still no cert after wake")
                 return "SAF_ERROR:No certificate loaded"
 
         # --- Esperar hasta que el usuario introduzca la contraseña ---
         if not password:
+            _dbg("WAIT_PASS: blocking until password entered")
             self._setup_ready.clear()
             self.after(0, lambda: self.log_event(
                 "event", "Petición de firma en espera: falta contraseña."))
@@ -1356,13 +1368,17 @@ class App(customtkinter.CTk):
                 text="Introduzca la contraseña del certificado",
                 text_color="orange"))
             if not self._setup_ready.wait(timeout=120):
+                _dbg("WAIT_PASS: timeout")
                 return "SAF_ERROR:Timeout waiting for password"
+            _dbg("WAIT_PASS: woke up")
             password = self._http_password
             if not password:
+                _dbg("WAIT_PASS: still no password after wake")
                 return "SAF_ERROR:No certificate loaded"
 
         # --- Esperar hasta que el usuario confirme la contraseña ---
         if not self.password_confirmed and not self.cache_pass_var.get():
+            _dbg("WAIT_CONFIRM: blocking until password confirmed")
             self._setup_ready.clear()
             self.after(0, lambda: self.log_event(
                 "event", "Petición de firma en espera: contraseña sin confirmar."))
@@ -1370,77 +1386,93 @@ class App(customtkinter.CTk):
                 text="Pulse 'Aceptar' para confirmar la contraseña",
                 text_color="orange"))
             if not self._setup_ready.wait(timeout=120):
+                _dbg("WAIT_CONFIRM: timeout")
                 return "SAF_ERROR:Timeout waiting for password confirmation"
+            _dbg("WAIT_CONFIRM: woke up")
             # Releer por si cambió mientras esperábamos
             if not self.password_confirmed and not self.cache_pass_var.get():
+                _dbg("WAIT_CONFIRM: still not confirmed after wake")
                 return "SAF_ERROR:Password not confirmed"
             password = self._http_password
 
-        # Cargar certificado
-        from signer import load_certificate
-        private_key, certificate, additional_certs = \
-            load_certificate(cert_file, password)
+        # Cargar certificado y firmar (protegido para notificar errores en GUI)
+        try:
+            from signer import load_certificate
+            private_key, certificate, additional_certs = \
+                load_certificate(cert_file, password)
 
-        # Obtener el formato de la URL
-        from urllib.parse import parse_qs, urlparse
-        parsed = urlparse(url.split('\n')[0])
-        params = parse_qs(parsed.query)
-        fmt = params.get('format', ['PAdES'])[0].upper()
+            # Obtener el formato de la URL
+            from urllib.parse import parse_qs, urlparse
+            parsed = urlparse(url.split('\n')[0])
+            params = parse_qs(parsed.query)
+            fmt = params.get('format', ['PAdES'])[0].upper()
 
-        _dbg(f"signing with fmt='{fmt}'")
+            _dbg(f"signing with fmt='{fmt}'")
 
-        # --- Firmar según formato ---
-        if fmt.startswith('XADES'):
-            # XAdES: firma XML avanzada
-            from xades_signer import sign_xades
-            signed_data = sign_xades(data_to_sign, private_key, certificate)
+            # --- Firmar según formato ---
+            if fmt.startswith('XADES'):
+                # XAdES: firma XML avanzada
+                from xades_signer import sign_xades
+                signed_data = sign_xades(data_to_sign, private_key, certificate)
 
-        elif fmt.startswith('CADES'):
-            # CAdES-BES: firma CMS con datos embeebidos
-            from endesive import plain
-            from asn1crypto import cms
+            elif fmt.startswith('CADES'):
+                # CAdES-BES: firma CMS con datos embeebidos
+                from endesive import plain
+                from asn1crypto import cms
 
-            # Firmar (produce CMS detached)
-            detached = plain.sign(
-                data_to_sign, private_key, certificate,
-                additional_certs, hashalgo='sha256', attrs=True,
-            )
+                # Firmar (produce CMS detached)
+                detached = plain.sign(
+                    data_to_sign, private_key, certificate,
+                    additional_certs, hashalgo='sha256', attrs=True,
+                )
 
-            # Parsear y embeber los datos en EncapsulatedContentInfo
-            ci = cms.ContentInfo.load(detached)
-            sd = ci['content']
-            eci = sd['encap_content_info']
-            eci['content'] = data_to_sign  # Embeber los datos originales
-            signed_data = ci.dump()
-            _dbg(f"CAdES signed (attached): {len(signed_data)} bytes")
+                # Parsear y embeber los datos en EncapsulatedContentInfo
+                ci = cms.ContentInfo.load(detached)
+                sd = ci['content']
+                eci = sd['encap_content_info']
+                eci['content'] = data_to_sign  # Embeber los datos originales
+                signed_data = ci.dump()
+                _dbg(f"CAdES signed (attached): {len(signed_data)} bytes")
 
-        elif fmt.startswith('PADES') or fmt == 'PDF':
-            # PAdES: firma estándar de PDF
-            import datetime
-            import endesive.pdf.cms
+            elif fmt.startswith('PADES') or fmt == 'PDF':
+                # PAdES: firma estándar de PDF
+                import datetime
+                import endesive.pdf.cms
 
-            date = datetime.datetime.now(datetime.timezone.utc)
-            dct = {
-                "sigflags": 3,
-                "sigpage": 0,
-                "contact": "",
-                "location": "",
-                "signingdate": date.strftime('D:%Y%m%d%H%M%SZ'),
-                "reason": "Signed with PyFirma",
-            }
-            sig = endesive.pdf.cms.sign(
-                data_to_sign, dct, private_key, certificate,
-                additional_certs, 'sha256',
-            )
-            signed_data = data_to_sign + sig
+                date = datetime.datetime.now(datetime.timezone.utc)
+                dct = {
+                    "sigflags": 3,
+                    "sigpage": 0,
+                    "contact": "",
+                    "location": "",
+                    "signingdate": date.strftime('D:%Y%m%d%H%M%SZ'),
+                    "reason": "Signed with PyFirma",
+                }
+                sig = endesive.pdf.cms.sign(
+                    data_to_sign, dct, private_key, certificate,
+                    additional_certs, 'sha256',
+                )
+                signed_data = data_to_sign + sig
 
-        else:
-            return f"SAF_ERROR:Unsupported format: {fmt}"
+            else:
+                return f"SAF_ERROR:Unsupported format: {fmt}"
 
-        # Codificar en base64 URL-safe y devolver con prefijo '|'
-        # (mismo formato que el modo WebSocket)
-        b64 = self._encode_urlsafe_b64(signed_data)
-        return "|" + b64
+            # Codificar en base64 URL-safe y devolver con prefijo '|'
+            # (mismo formato que el modo WebSocket)
+            b64 = self._encode_urlsafe_b64(signed_data)
+            self.after(0, lambda: self.log_event(
+                "event", f"Firma HTTP completada ({len(signed_data)} bytes)"))
+            self.after(0, lambda: self.status_label.configure(
+                text="Firma enviada al navegador", text_color="green"))
+            return "|" + b64
+
+        except Exception as e:
+            _dbg(f"SIGN_ERROR: {type(e).__name__}: {e}")
+            self.after(0, lambda: self.log_event(
+                "error", f"Error en firma HTTP: {type(e).__name__}: {e}"))
+            self.after(0, lambda: self.status_label.configure(
+                text="Error durante la firma", text_color="red"))
+            return f"SAF_ERROR:{e}"
 
     # =======================================================================
     # Eventos de la interfaz gráfica
@@ -1521,8 +1553,7 @@ class App(customtkinter.CTk):
             self.password_confirmed = False
             self.confirm_pass_button.grid()
             self.sign_button.configure(state="disabled")
-        # Si el hilo HTTP espera por una contraseña, despertarlo
-        # para que reevalúe (avanzará hasta necesitar confirmación)
+        # Si el hilo HTTP espera, despertarlo para que reevalúe
         if self._http_password:
             self._setup_ready.set()
 
@@ -1540,8 +1571,8 @@ class App(customtkinter.CTk):
         self.password_confirmed = True
         self._http_password = self.pass_entry.get()
         self.confirm_pass_button.grid_remove()
-        if self._http_cert_file:
-            self._setup_ready.set()
+        # Despertar al hilo HTTP si esperaba confirmación
+        self._setup_ready.set()
         self.check_ready()
 
     def on_cache_pass_toggle(self):
@@ -1557,8 +1588,7 @@ class App(customtkinter.CTk):
             self._http_password = self.pass_entry.get()
             self.confirm_pass_button.grid_remove()
             # Despertar al hilo HTTP si esperaba confirmación
-            if self._http_cert_file and self._http_password:
-                self._setup_ready.set()
+            self._setup_ready.set()
         else:
             self.password_confirmed = False
             self.confirm_pass_button.grid()
