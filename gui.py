@@ -481,7 +481,7 @@ class App(customtkinter.CTk):
                         if ports and ws_server:
                             self.afirma_ports = ports
                             # Arrancar nuevo servidor WebSocket en los puertos
-                            self.ws_server = server.start_server_thread(
+                            self.ws_server = ws_server.start_server_thread(
                                 ports, self.on_ws_event
                             )
                             # También servidor HTTP (JSSocket)
