@@ -1,3 +1,16 @@
+"""
+Módulo de firma de PDF (formato PAdES) para PyFirma.
+
+Proporciona las funciones principales para:
+  - Cargar certificados PKCS#12 (.p12/.pfx).
+  - Crear marcas de agua visibles en PDF.
+  - Firmar digitalmente documentos PDF con certificados X.509.
+
+Utiliza la biblioteca endesive para la firma criptográfica PAdES,
+cryptography para la carga de claves, y pypdf + reportlab para
+la manipulación de documentos PDF y marcas de agua.
+"""
+
 import datetime
 import io
 import endesive.pdf.cms
@@ -8,15 +21,33 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from pypdf import PdfReader, PdfWriter
 
+
 def load_certificate(path, password):
     """
-    Loads a PKCS#12 certificate from a file.
+    Carga un certificado PKCS#12 desde un archivo.
+
+    Los archivos .p12/.pfx contienen la clave privada, el certificado
+    y opcionalmente la cadena de certificación.
+
+    Args:
+        path: Ruta al archivo .p12 o .pfx.
+        password: Contraseña del certificado (puede ser cadena vacía).
+
+    Returns:
+        tuple: (clave_privada, certificado, certificados_adicionales)
+               tal como lo devuelve pkcs12.load_key_and_certificates.
+
+    Raises:
+        ValueError: Si la contraseña es incorrecta o el archivo está corrupto.
+        RuntimeError: Si ocurre cualquier otro error al cargar el certificado.
     """
+    # Leer el archivo PKCS#12 completo en memoria
     with open(path, "rb") as fp:
         p12_data = fp.read()
-    
+
+    # Convertir la contraseña a bytes (None si está vacía)
     password_bytes = password.encode('utf-8') if password else None
-    
+
     try:
         p12 = pkcs12.load_key_and_certificates(p12_data, password_bytes)
         return p12
@@ -25,181 +56,189 @@ def load_certificate(path, password):
     except Exception as e:
         raise RuntimeError(f"Failed to load certificate: {str(e)}")
 
+
 def create_watermark(text, vertical_left=False):
     """
-    Creates a watermark PDF page with the given text using ReportLab.
-    Returns the PDF bytes.
+    Crea una página PDF con una marca de agua (firma visible).
+
+    Genera un PDF de una sola página usando ReportLab que contiene
+    el texto de firma. Este PDF se superpone posteriormente al
+    documento original mediante merge_page.
+
+    Args:
+        text: Texto a mostrar en la marca de agua (ej. "Firmado por: ...").
+        vertical_left: Si es True, coloca el texto rotado 90° en el
+                       margen izquierdo. Si es False, lo coloca en la
+                       esquina inferior izquierda.
+
+    Returns:
+        io.BytesIO: Buffer con los bytes del PDF de la marca de agua.
     """
     packet = io.BytesIO()
-    # Create a new PDF with Reportlab
+    # Crear un nuevo PDF con ReportLab en tamaño A4
     can = canvas.Canvas(packet, pagesize=A4)
     can.setFont("Helvetica", 8)
-    
+
     if vertical_left:
-        # Rotate 90 degrees
-        can.rotate(90)
-        
-        # Position: Left Margin, Middle
-        # When rotated 90 degrees:
-        # X becomes vertical axis (bottom to top)
-        # Y becomes horizontal axis (left to right, but inverted relative to page)
-        
-        # We need to coordinate transform or just simpler logic:
-        # Translate to desired origin, then rotate.
-        
-        # Reset and use translate/rotate context
-        can = canvas.Canvas(packet, pagesize=A4)
-        can.setFont("Helvetica", 8) 
-        
-        # Target position: Left margin (e.g., 20) and Centered vertically (e.g. A4 height / 2)
-        # A4 size is roughly 595.27 x 841.89 points
+        # --- Modo vertical en margen izquierdo ---
+        # Se rota el texto 90° para que se lea de abajo hacia arriba
+        # en el margen izquierdo de la página.
+
+        # Obtener dimensiones de página A4 (aprox. 595.27 x 841.89 puntos)
         page_width, page_height = A4
-        
-        # We want the text to run up the left side.
-        # Origin for string will be (margin, center - half_text_length)
-        # But we want rotation.
-        
+
+        # Guardar el estado gráfico actual para restaurarlo después
         can.saveState()
+
+        # Trasladar el origen al punto (20, mitad de la altura de página)
+        # y rotar 90° — el texto se dibujará hacia arriba desde ese punto
         can.translate(20, page_height / 2)
         can.rotate(90)
-        
-        # Now we are drawing along the Y axis of the page, centered
-        # Text alignment
+
+        # Dibujar cada línea de texto centrada respecto al punto de origen
         lines = text.split('\n')
-        total_lines = len(lines)
-        
-        # Draw centered around the origin
-        # Calculate width of text to center it? 
-        # Actually, if we rotate 90, the text baseline runs up. 
-        # We can just drawString(0, 0, text) and it will start at (20, half_height) and go UP.
-        
-        # Let's adjust slightly to center the block of text if multi-line
-        # Multi-line in rotated context:
-        # Each line is stacked 'below' the previous in Y, which means to the LEFT in unrotated space.
-        # So we need to draw lines at standard offsets.
-        
-        # Center the block horizontally (in unrotated space, so Y in rotated space)
-        # We start at (0,0) which is (20, page_height/2)
-        
-        # Let's approximate starting X (in rotated sys) to center the text block length?
-        # A simpler approach for "Firmado por..." date is usually just starting from a point.
-        # Let's start the text block centered on the page height.
-        text_width = can.stringWidth(lines[0], "Helvetica", 8) # approximate with first line
-        start_x = - (text_width / 2)
-        
         for line in lines:
             line_width = can.stringWidth(line, "Helvetica", 8)
-            # Center each line relative to the center point
+            # Centrar la línea horizontalmente
             can.drawString(-(line_width / 2), 0, line)
-            # Move "down" (which is left in page coordinates) for next line
-            # But wait, standard text usually reads left-to-right.
-            # "Rotated 90 degrees left" -> Text runs bottom-to-top.
-            
-            # If we want the lines stacked, we move 'down' in Y.
-            # Y axis in rotated space points to the 'left' of the page.
-            # So decreasing Y moves towards the left edge.
-            can.translate(0, -10) 
-            
+            # Desplazar hacia abajo en el sistema rotado (equivale a
+            # moverse hacia la izquierda en coordenadas de página)
+            can.translate(0, -10)
+
         can.restoreState()
-        
     else:
-        # Position: Bottom Left, slightly offset
+        # --- Modo normal: esquina inferior izquierda ---
+        # Posición inicial: (50, 50) puntos desde la esquina inferior izquierda
         x = 50
         y = 50
-        
-        # Split text into lines
+
         lines = text.split('\n')
         for line in lines:
             can.drawString(x, y, line)
-            y -= 10 # Line spacing
-        
+            y -= 10  # Espaciado entre líneas: 10 puntos
+
     can.save()
 
-    # Move to the beginning of the StringIO buffer
+    # Retroceder el buffer al principio para que pueda ser leído
     packet.seek(0)
     return packet
 
-def sign_pdf(input_pdf_path, cert_path, password, output_pdf_path, visible=False, vertical_left=False, all_pages=False):
+
+def sign_pdf(
+    input_pdf_path, cert_path, password, output_pdf_path,
+    visible=False, vertical_left=False, all_pages=False,
+):
     """
-    Signs a PDF file with the given certificate and password.
-    Optionally adds a visible signature stamp.
-    If all_pages is True, the visible signature will be added to all pages.
+    Firma digitalmente un archivo PDF con un certificado.
+
+    Realiza una firma PAdES (PDF Advanced Electronic Signature) sobre
+    el documento. Opcionalmente, añade una marca de agua visible con
+    los datos del firmante.
+
+    Flujo:
+    1. Cargar certificado y clave privada.
+    2. Leer el PDF original.
+    3. Si se solicita firma visible, generar la marca de agua y
+       fusionarla con el PDF (primera página o todas).
+    4. Calcular y embeber la firma criptográfica PAdES.
+    5. Guardar el PDF firmado.
+
+    Args:
+        input_pdf_path: Ruta al PDF de entrada.
+        cert_path: Ruta al archivo de certificado .p12/.pfx.
+        password: Contraseña del certificado.
+        output_pdf_path: Ruta donde guardar el PDF firmado.
+        visible: Si es True, añade una marca de agua visible.
+        vertical_left: Si es True, coloca la marca en el margen izquierdo.
+        all_pages: Si es True, aplica la marca a todas las páginas
+                   (requiere visible=True).
+
+    Raises:
+        ValueError: Si la contraseña del certificado es incorrecta.
+        RuntimeError: Si ocurre un error durante la carga o firma.
     """
-    # Load certificate and private key
-    private_key, certificate, additional_certificates = load_certificate(cert_path, password)
-    
-    # Prepare date for signing
+    # --- 1. Cargar certificado y clave privada ---
+    private_key, certificate, additional_certificates = \
+        load_certificate(cert_path, password)
+
+    # --- 2. Preparar la fecha de firma en formato PDF ---
+    # Formato requerido por el estándar PDF: D:YYYYMMDDHHmmSSZ
     date = datetime.datetime.now(datetime.timezone.utc)
     date_str = date.strftime('D:%Y%m%d%H%M%SZ')
 
-    # Read original PDF data
+    # --- 3. Leer el PDF original completo en memoria ---
     with open(input_pdf_path, 'rb') as fp:
         data = fp.read()
 
-    # If visible signature is requested, modify the PDF data before signing
+    # --- 4. Añadir marca de agua visible si se solicita ---
     if visible:
-        # Extract Common Name (CN) from certificate
+        # Extraer el nombre común (CN) del certificado para la marca
         subject_name = "Unknown"
         for attribute in certificate.subject:
             if attribute.oid == NameOID.COMMON_NAME:
                 subject_name = attribute.value
                 break
-        
-        # Prepare text
+
+        # Preparar el texto de la marca de agua
         local_date = datetime.datetime.now()
         formatted_date = local_date.strftime("%d/%m/%Y %H:%M:%S")
         watermark_text = f"Firmado por: {subject_name}\nFecha: {formatted_date}"
-        
-        # Create watermark
-        watermark_pdf_bytes = create_watermark(watermark_text, vertical_left=vertical_left)
-        
-        # Merge watermark
+
+        # Generar el PDF de la marca de agua
+        watermark_pdf_bytes = create_watermark(
+            watermark_text, vertical_left=vertical_left
+        )
+
+        # Fusionar la marca de agua con el PDF original
         watermark_pdf = PdfReader(watermark_pdf_bytes)
         original_pdf = PdfReader(io.BytesIO(data))
         pdf_writer = PdfWriter()
-        
+
         if all_pages:
-            # Apply signature to all pages
+            # Aplicar la marca a todas las páginas del documento
             for page_num in range(len(original_pdf.pages)):
                 page = original_pdf.pages[page_num]
                 page.merge_page(watermark_pdf.pages[0])
                 pdf_writer.add_page(page)
         else:
-            # Merge into the first page only (index 0)
+            # Aplicar la marca solo a la primera página (índice 0)
             first_page = original_pdf.pages[0]
             first_page.merge_page(watermark_pdf.pages[0])
             pdf_writer.add_page(first_page)
-            
-            # Add remaining pages without signature
+
+            # Añadir el resto de páginas sin marca
             for page_num in range(1, len(original_pdf.pages)):
                 pdf_writer.add_page(original_pdf.pages[page_num])
-            
-        # Write modified PDF to bytes for signing
+
+        # Serializar el PDF modificado a bytes para la firma
         output_buffer = io.BytesIO()
         pdf_writer.write(output_buffer)
         data = output_buffer.getvalue()
 
-    # Data to sign (Cryptographic Metadata)
+    # --- 5. Preparar metadatos de la firma criptográfica ---
     dct = {
-        "sigflags": 3,
-        "sigpage": 0,
-        "contact": "",
-        "location": "",
+        "sigflags": 3,        # 3 = firma PAdES (certificación + aprobación)
+        "sigpage": 0,         # Página donde se coloca la firma invisible (0-based)
+        "contact": "",        # Información de contacto del firmante
+        "location": "",       # Ubicación geográfica de la firma
         "signingdate": date_str,
         "reason": "Signed with PyFirma",
     }
-    
-    # Sign (using the potentially modified data)
+
+    # --- 6. Calcular la firma criptográfica ---
+    # endesive.pdf.cms.sign calcula el hash del documento y lo firma
+    # con la clave privada, produciendo un objeto CMS (PKCS#7) embebido
     datas = endesive.pdf.cms.sign(
         data,
         dct,
         private_key,
         certificate,
         additional_certificates,
-        'sha256'
+        'sha256',  # Algoritmo de hash
     )
-    
-    # Save output
+
+    # --- 7. Guardar el PDF firmado ---
+    # El PDF firmado es el documento original + la firma CMS al final
     with open(output_pdf_path, 'wb') as fp:
-        fp.write(data)
-        fp.write(datas)
+        fp.write(data)   # Documento PDF (con o sin marca de agua)
+        fp.write(datas)  # Firma CMS emebebida
