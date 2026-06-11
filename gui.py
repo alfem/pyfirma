@@ -116,6 +116,8 @@ class App(customtkinter.CTk):
 
         # --- Inicialización ---
         self.load_config()   # Cargar configuración persistente
+        # La contraseña se considera confirmada si viene de caché
+        self.password_confirmed = bool(self.cached_password)
         self.setup_ui()      # Construir la interfaz gráfica
 
         if self.afirma_url:
@@ -174,7 +176,7 @@ class App(customtkinter.CTk):
         """
         try:
             config = {"last_cert_path": self.cert_file}
-            if self.cache_pass_var.get() and self.pass_entry.get():
+            if self.cache_pass_var.get() and self.password_confirmed:
                 config["last_password"] = self.pass_entry.get()
             else:
                 config["last_password"] = ""
@@ -268,6 +270,17 @@ class App(customtkinter.CTk):
             "<KeyRelease>", lambda e: self._on_password_changed()
         )
 
+        # Botón para confirmar explícitamente la contraseña.
+        # Solo se muestra cuando "Recordar contraseña" NO está activado.
+        # Al pulsarlo, valida la contraseña y permite firmar.
+        self.confirm_pass_button = customtkinter.CTkButton(
+            self.frame, text="Aceptar", width=60,
+            command=self._on_confirm_password,
+        )
+        self.confirm_pass_button.grid(
+            row=2, column=2, padx=(5, 0), pady=10, sticky="w"
+        )
+
         # Checkbox para recordar contraseña
         self.cache_pass_var = customtkinter.BooleanVar(
             value=bool(self.cached_password)
@@ -279,8 +292,12 @@ class App(customtkinter.CTk):
             command=self.on_cache_pass_toggle,
         )
         self.cache_pass_checkbox.grid(
-            row=2, column=2, padx=10, pady=10, sticky="w"
+            row=2, column=3, padx=10, pady=10, sticky="w"
         )
+
+        # Si la contraseña ya está confirmada (viene de caché), ocultar el botón
+        if self.password_confirmed:
+            self.confirm_pass_button.grid_remove()
 
         # --- Fila 3: Opción de firma visible ---
         self.visible_var = customtkinter.BooleanVar(value=False)
@@ -907,6 +924,19 @@ class App(customtkinter.CTk):
                     self.ws_server.send_response("CANCEL")
                 return
 
+            # Validar que la contraseña está confirmada (salvo caché activado)
+            if not self.password_confirmed and not self.cache_pass_var.get():
+                self.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "Error",
+                        "Pulse 'Aceptar' para confirmar la contraseña.",
+                    ),
+                )
+                if self.ws_server:
+                    self.ws_server.send_response("CANCEL")
+                return
+
             # Validar que hay certificado cargado
             if not cert_file or not os.path.exists(cert_file):
                 self.after(
@@ -1299,6 +1329,8 @@ class App(customtkinter.CTk):
         cert_file = self._http_cert_file
         if not password or not cert_file:
             return "SAF_ERROR:No certificate loaded"
+        if not self.password_confirmed and not self.cache_pass_var.get():
+            return "SAF_ERROR:Password not confirmed"
 
         # Cargar certificado
         from signer import load_certificate
@@ -1434,29 +1466,66 @@ class App(customtkinter.CTk):
 
         Se llama en cada pulsación de tecla (KeyRelease) para que
         el manejador HTTP siempre tenga la contraseña actualizada.
+
+        Si el usuario modifica la contraseña, invalida la confirmación
+        previa (salvo que esté activado "Recordar contraseña").
         """
         self._http_password = self.pass_entry.get()
+        if not self.cache_pass_var.get():
+            self.password_confirmed = False
+            self.confirm_pass_button.grid()
+            self.sign_button.configure(state="disabled")
+
+    def _on_confirm_password(self):
+        """
+        El usuario confirma explícitamente la contraseña escrita.
+
+        Oculta el botón de confirmación, marca la contraseña como
+        validada y sincroniza la variable thread-safe para los
+        manejadores HTTP/WS.
+        """
+        self.password_confirmed = True
+        self._http_password = self.pass_entry.get()
+        self.confirm_pass_button.grid_remove()
+        self.check_ready()
 
     def on_cache_pass_toggle(self):
         """
-        Guarda o limpia la contraseña en caché cuando se marca/desmarca
-        el checkbox de 'Recordar contraseña'.
+        Activa o desactiva la caché de contraseña.
+
+        Si se activa "Recordar contraseña", la contraseña se considera
+        confirmada automáticamente y se oculta el botón Aceptar.
+        Si se desactiva, hay que volver a confirmar explícitamente.
         """
+        if self.cache_pass_var.get():
+            self.password_confirmed = True
+            self._http_password = self.pass_entry.get()
+            self.confirm_pass_button.grid_remove()
+        else:
+            self.password_confirmed = False
+            self.confirm_pass_button.grid()
+            self.sign_button.configure(state="disabled")
         self.save_config()
 
     def check_ready(self):
         """
-        Habilita el botón de firma si se han seleccionado tanto
-        un PDF como un certificado.
+        Habilita el botón de firma si se han seleccionado un PDF,
+        un certificado y la contraseña está confirmada.
 
         En modo interceptor, solo se habilita si hay una petición
         de firma pendiente (pending_sign_request), ya que en el
         flujo normal los datos llegan del navegador y la firma
         es automática.
+
+        La contraseña debe estar confirmada (botón Aceptar pulsado)
+        salvo que esté activado "Recordar contraseña".
         """
         if self.input_file and self.cert_file:
             if self.afirma_url and not self.pending_sign_request:
                 # Modo interceptor sin petición pendiente: no habilitar
+                return
+            # Exigir contraseña confirmada (o recordar contraseña activado)
+            if not self.password_confirmed and not self.cache_pass_var.get():
                 return
             self.sign_button.configure(state="normal")
 
@@ -1477,6 +1546,12 @@ class App(customtkinter.CTk):
             messagebox.showerror(
                 "Error",
                 "Por favor, introduzca la contraseña del certificado.",
+            )
+            return
+        if not self.password_confirmed and not self.cache_pass_var.get():
+            messagebox.showerror(
+                "Error",
+                "Pulse 'Aceptar' para confirmar la contraseña.",
             )
             return
 
