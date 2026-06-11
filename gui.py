@@ -991,31 +991,46 @@ class App(customtkinter.CTk):
             # CAdES (CMS Advanced Electronic Signature) - BES
             # ================================================================
             elif fmt.startswith('CADES'):
-                from endesive import plain
+                from endesive import plain, signer
                 from asn1crypto import cms
 
-                # Firmar con endesive.plain (produce CMS detached)
-                signed_data = plain.sign(
-                    pdf_data, private_key, certificate,
-                    additional_certificates, hashalgo='sha256', attrs=True,
-                )
+                # Detectar hash precalculado (SHA-256 = 32 bytes).
+                # Para documentos grandes, la webapp envía el hash
+                # en lugar del documento porque no cabe en la URL.
+                if len(pdf_data) == 32:
+                    # Usar el hash como signed_value precalculado
+                    signed_data = signer.sign(
+                        b'', private_key, certificate,
+                        additional_certificates, hashalgo='sha256',
+                        attrs=True, signed_value=pdf_data,
+                    )
+                    is_hash = True
+                else:
+                    # Firmar con endesive.plain (produce CMS detached)
+                    signed_data = plain.sign(
+                        pdf_data, private_key, certificate,
+                        additional_certificates, hashalgo='sha256',
+                        attrs=True,
+                    )
 
-                # Embeber los datos originales en el CMS
-                # (convierte detached → attached/explícito)
-                from asn1crypto.core import OctetString
-                ci = cms.ContentInfo.load(signed_data)
-                ci['content']['encap_content_info']['content'] = \
-                    OctetString(value=pdf_data)
-                signed_data = ci.dump(force=True)
+                    # Embeber los datos originales en el CMS
+                    # (convierte detached → attached/explícito)
+                    from asn1crypto.core import OctetString
+                    ci = cms.ContentInfo.load(signed_data)
+                    ci['content']['encap_content_info']['content'] = \
+                        OctetString(value=pdf_data)
+                    signed_data = ci.dump(force=True)
+                    is_hash = False
 
                 b64_urlsafe = self._encode_urlsafe_b64(signed_data)
                 b64_response = "|" + b64_urlsafe
 
                 self.after(
                     0,
-                    lambda d=signed_data: self.log_event(
+                    lambda d=signed_data, h=is_hash: self.log_event(
                         "event",
-                        f"CAdES firmado y enviado ({len(d)} bytes)",
+                        f"CAdES {'(hash precalculado)' if h else ''}"
+                        f" firmado y enviado ({len(d)} bytes)",
                     ),
                 )
 
@@ -1417,24 +1432,34 @@ class App(customtkinter.CTk):
                 signed_data = sign_xades(data_to_sign, private_key, certificate)
 
             elif fmt.startswith('CADES'):
-                # CAdES-BES: firma CMS con datos embeebidos
-                from endesive import plain
+                # CAdES-BES: firma CMS
+                from endesive import plain, signer
                 from asn1crypto import cms
 
-                # Firmar (produce CMS detached)
-                detached = plain.sign(
-                    data_to_sign, private_key, certificate,
-                    additional_certs, hashalgo='sha256', attrs=True,
-                )
+                # Detectar hash precalculado (SHA-256 = 32 bytes)
+                if len(data_to_sign) == 32:
+                    _dbg("CAdES: detected precomputed hash, using signed_value")
+                    signed_data = signer.sign(
+                        b'', private_key, certificate,
+                        additional_certs, hashalgo='sha256',
+                        attrs=True, signed_value=data_to_sign,
+                    )
+                    _dbg(f"CAdES signed (hash mode): {len(signed_data)} bytes")
+                else:
+                    # Firmar (produce CMS detached)
+                    detached = plain.sign(
+                        data_to_sign, private_key, certificate,
+                        additional_certs, hashalgo='sha256', attrs=True,
+                    )
 
-                # Parsear y embeber los datos en EncapsulatedContentInfo
-                from asn1crypto.core import OctetString
-                ci = cms.ContentInfo.load(detached)
-                sd = ci['content']
-                eci = sd['encap_content_info']
-                eci['content'] = OctetString(value=data_to_sign)
-                signed_data = ci.dump(force=True)
-                _dbg(f"CAdES signed (attached): {len(signed_data)} bytes")
+                    # Embeber los datos en EncapsulatedContentInfo
+                    from asn1crypto.core import OctetString
+                    ci = cms.ContentInfo.load(detached)
+                    sd = ci['content']
+                    eci = sd['encap_content_info']
+                    eci['content'] = OctetString(value=data_to_sign)
+                    signed_data = ci.dump(force=True)
+                    _dbg(f"CAdES signed (attached): {len(signed_data)} bytes")
 
             elif fmt.startswith('PADES') or fmt == 'PDF':
                 # PAdES: firma estándar de PDF
