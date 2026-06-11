@@ -413,6 +413,48 @@ class App(customtkinter.CTk):
             except Exception as e:
                 self.log_event("error", str(e))
 
+        # --- Ocultar widgets que no aplican en modo interceptor ---
+        # El PDF lo envía el navegador, no se selecciona en local.
+        # La firma se dispara automáticamente al recibir la petición.
+        # Las opciones de firma visible son solo para el flujo local.
+        self._hide_local_signing_widgets()
+
+    # =======================================================================
+    # Visibilidad condicional de widgets de firma local
+    # =======================================================================
+
+    def _show_local_signing_widgets(self):
+        """
+        Muestra los widgets necesarios para firma manual desde la GUI.
+
+        Se llama cuando el navegador envía una petición de firma sin
+        datos incrustados (pending_sign_request), y el usuario necesita
+        seleccionar un PDF local y pulsar Firmar.
+        """
+        self.file_label.grid()
+        self.file_path_label.grid()
+        self.file_button.grid()
+        self.visible_checkbox.grid()
+        self.vertical_left_checkbox.grid()
+        self.all_pages_checkbox.grid()
+        self.sign_button.pack(pady=20)
+
+    def _hide_local_signing_widgets(self):
+        """
+        Oculta los widgets de firma local.
+
+        Se llama al iniciar en modo interceptor y tras completar un
+        pending_sign_request, para dejar solo los controles relevantes
+        al interceptor (certificado, contraseña, logs).
+        """
+        self.file_label.grid_remove()
+        self.file_path_label.grid_remove()
+        self.file_button.grid_remove()
+        self.visible_checkbox.grid_remove()
+        self.vertical_left_checkbox.grid_remove()
+        self.all_pages_checkbox.grid_remove()
+        self.sign_button.pack_forget()
+
     def on_ws_event(self, event_type, message):
         """
         Callback invocado desde los servidores (WebSocket/HTTP) al recibir
@@ -766,6 +808,9 @@ class App(customtkinter.CTk):
                 # Se marca como pendiente y se permite al usuario firmar
                 # manualmente desde la GUI.
                 self.pending_sign_request = True
+                # Mostrar los widgets de firma local para que el usuario
+                # pueda seleccionar el PDF y firmar manualmente.
+                self._show_local_signing_widgets()
                 self.after(
                     0,
                     lambda: self.log_event(
@@ -1403,8 +1448,16 @@ class App(customtkinter.CTk):
         """
         Habilita el botón de firma si se han seleccionado tanto
         un PDF como un certificado.
+
+        En modo interceptor, solo se habilita si hay una petición
+        de firma pendiente (pending_sign_request), ya que en el
+        flujo normal los datos llegan del navegador y la firma
+        es automática.
         """
         if self.input_file and self.cert_file:
+            if self.afirma_url and not self.pending_sign_request:
+                # Modo interceptor sin petición pendiente: no habilitar
+                return
             self.sign_button.configure(state="normal")
 
     # =======================================================================
@@ -1518,6 +1571,8 @@ class App(customtkinter.CTk):
                 # a binario), evitando corrupción UTF-8 en la URL de guardado.
                 self.ws_server.send_response("|" + b64)
                 self.pending_sign_request = False
+                # Restaurar la interfaz limpia del interceptor
+                self._hide_local_signing_widgets()
                 self.log_event(
                     "info",
                     "Documento firmado enviado de vuelta por WebSocket.",
