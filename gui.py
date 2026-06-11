@@ -1002,9 +1002,11 @@ class App(customtkinter.CTk):
 
                 # Embeber los datos originales en el CMS
                 # (convierte detached → attached/explícito)
+                from asn1crypto.core import OctetString
                 ci = cms.ContentInfo.load(signed_data)
-                ci['content']['encap_content_info']['content'] = pdf_data
-                signed_data = ci.dump()
+                ci['content']['encap_content_info']['content'] = \
+                    OctetString(value=pdf_data)
+                signed_data = ci.dump(force=True)
 
                 b64_urlsafe = self._encode_urlsafe_b64(signed_data)
                 b64_response = "|" + b64_urlsafe
@@ -1426,11 +1428,12 @@ class App(customtkinter.CTk):
                 )
 
                 # Parsear y embeber los datos en EncapsulatedContentInfo
+                from asn1crypto.core import OctetString
                 ci = cms.ContentInfo.load(detached)
                 sd = ci['content']
                 eci = sd['encap_content_info']
-                eci['content'] = data_to_sign  # Embeber los datos originales
-                signed_data = ci.dump()
+                eci['content'] = OctetString(value=data_to_sign)
+                signed_data = ci.dump(force=True)
                 _dbg(f"CAdES signed (attached): {len(signed_data)} bytes")
 
             elif fmt.startswith('PADES') or fmt == 'PDF':
