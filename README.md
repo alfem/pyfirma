@@ -1,26 +1,14 @@
 # pyfirma
 
-pyfirma es un experimento cuyo objetivo es trasladar la aplicación oficial AutoFirma, de una manera muy simplificada, al lenguaje de programación Python. Este proyecto busca ofrecer una alternativa ligera y fácil de estudiar o modificar.
+pyfirma es un experimento cuyo objetivo es trasladar la aplicación oficial AutoFirma (de una manera muy simplificada) al lenguaje de programación Python. Este proyecto busca ofrecer una alternativa a AutoFirma ligera y más fácil de estudiar o modificar.
 
 ## Instalación
 
-Para ejecutar este programa, necesitas tener Python instalado. Se recomienda seguir estos pasos:
-
-1. Clona este repositorio o descarga el código fuente.
-2. Es recomendable crear un entorno virtual:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # En Linux/macOS
-   venv\Scripts\activate     # En Windows
-   ```
-3. Instala las dependencias necesarias:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Lee la guía detallada de [instalación](instalacion.md) para descargar e instalar Pyfirma en un ordenador con Linux (probado en Ubuntu). 
 
 ## Ejecución
 
-El programa puede funcionar tanto en modo gráfico (GUI) como en línea de comandos (CLI).
+El programa puede funcionar tanto en modo gráfico (GUI) como en línea de comandos (CLI). Se puede usar de forma independiente, para firmar ficheros locales, o asociado al navegador web (para firmas online).
 
 ### Modo Gráfico
 
@@ -53,4 +41,8 @@ python main.py -i documento.pdf -c certificado.p12 -p 12345 -o documento_firmado
 ```
 ### Pruebas
 
-Puedes comprobar que la firma es correcta usando la web https://valide.redsara.es/
+Puedes comprobar que una firma es correcta usando la web https://valide.redsara.es/
+
+**Más información**
+
+Si quieres modificar y adaptar este programa, tienes [información adicional sobre el protocolo afirma](procolo.md).
