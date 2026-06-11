@@ -2,6 +2,9 @@
 
 pyfirma es un experimento cuyo objetivo es trasladar la aplicación oficial AutoFirma (de una manera muy simplificada) al lenguaje de programación Python. Este proyecto busca ofrecer una alternativa a AutoFirma ligera y más fácil de estudiar o modificar.
 
+A diferencia de AutoFirma, Pyfirma no busca el certificado del usuario en los almacenes del navegador o del sistema operativo. Sólo tienes que tenerlos disponibles en el disco duro o en un pendrive cuando quieras firmar.
+
+
 ## Instalación
 
 Lee la guía detallada de [instalación](instalacion.md) para descargar e instalar Pyfirma en un ordenador con Linux (probado en Ubuntu). 
