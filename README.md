@@ -45,4 +45,4 @@ Puedes comprobar que una firma es correcta usando la web https://valide.redsara.
 
 **Más información**
 
-Si quieres modificar y adaptar este programa, tienes [información adicional sobre el protocolo afirma](procolo.md).
+Si quieres modificar y adaptar este programa, tienes [información adicional sobre el protocolo afirma](protocolo.md).
