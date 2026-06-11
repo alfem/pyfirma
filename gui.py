@@ -1342,57 +1342,56 @@ class App(customtkinter.CTk):
         # --- Esperar hasta que el usuario cargue el certificado ---
         if not cert_file:
             _dbg("WAIT_CERT: blocking until cert loaded")
-            self._setup_ready.clear()
             self.after(0, lambda: self.log_event(
                 "event", "Petición de firma en espera: falta certificado."))
             self.after(0, lambda: self.status_label.configure(
                 text="Seleccione un certificado (.p12/.pfx)", text_color="orange"))
             self.after(0, self.select_cert)  # Abrir automáticamente el diálogo
-            if not self._setup_ready.wait(timeout=120):
-                _dbg("WAIT_CERT: timeout")
-                return "SAF_ERROR:Timeout waiting for certificate"
-            _dbg("WAIT_CERT: woke up")
-            # Releer tras despertar (el usuario pudo cancelar el diálogo)
+            self._setup_ready.clear()
+            while not self._http_cert_file:
+                if not self._setup_ready.wait(timeout=120):
+                    _dbg("WAIT_CERT: timeout")
+                    return "SAF_ERROR:Timeout waiting for certificate"
+                _dbg("WAIT_CERT: woke up, cert_file=" +
+                     str(bool(self._http_cert_file)))
+                self._setup_ready.clear()
             cert_file = self._http_cert_file
-            if not cert_file:
-                _dbg("WAIT_CERT: still no cert after wake")
-                return "SAF_ERROR:No certificate loaded"
 
         # --- Esperar hasta que el usuario introduzca la contraseña ---
         if not password:
             _dbg("WAIT_PASS: blocking until password entered")
-            self._setup_ready.clear()
             self.after(0, lambda: self.log_event(
                 "event", "Petición de firma en espera: falta contraseña."))
             self.after(0, lambda: self.status_label.configure(
                 text="Introduzca la contraseña del certificado",
                 text_color="orange"))
-            if not self._setup_ready.wait(timeout=120):
-                _dbg("WAIT_PASS: timeout")
-                return "SAF_ERROR:Timeout waiting for password"
-            _dbg("WAIT_PASS: woke up")
+            self._setup_ready.clear()
+            while not self._http_password:
+                if not self._setup_ready.wait(timeout=120):
+                    _dbg("WAIT_PASS: timeout")
+                    return "SAF_ERROR:Timeout waiting for password"
+                _dbg("WAIT_PASS: woke up, pwd_len=" +
+                     str(len(self._http_password)))
+                self._setup_ready.clear()
             password = self._http_password
-            if not password:
-                _dbg("WAIT_PASS: still no password after wake")
-                return "SAF_ERROR:No certificate loaded"
 
         # --- Esperar hasta que el usuario confirme la contraseña ---
         if not self.password_confirmed and not self.cache_pass_var.get():
             _dbg("WAIT_CONFIRM: blocking until password confirmed")
-            self._setup_ready.clear()
             self.after(0, lambda: self.log_event(
                 "event", "Petición de firma en espera: contraseña sin confirmar."))
             self.after(0, lambda: self.status_label.configure(
                 text="Pulse 'Aceptar' para confirmar la contraseña",
                 text_color="orange"))
-            if not self._setup_ready.wait(timeout=120):
-                _dbg("WAIT_CONFIRM: timeout")
-                return "SAF_ERROR:Timeout waiting for password confirmation"
-            _dbg("WAIT_CONFIRM: woke up")
-            # Releer por si cambió mientras esperábamos
-            if not self.password_confirmed and not self.cache_pass_var.get():
-                _dbg("WAIT_CONFIRM: still not confirmed after wake")
-                return "SAF_ERROR:Password not confirmed"
+            self._setup_ready.clear()
+            while not self.password_confirmed and not self.cache_pass_var.get():
+                if not self._setup_ready.wait(timeout=120):
+                    _dbg("WAIT_CONFIRM: timeout")
+                    return "SAF_ERROR:Timeout waiting for password confirmation"
+                _dbg("WAIT_CONFIRM: woke up, confirmed=" +
+                     str(self.password_confirmed) +
+                     " cache=" + str(self.cache_pass_var.get()))
+                self._setup_ready.clear()
             password = self._http_password
 
         # Cargar certificado y firmar (protegido para notificar errores en GUI)
