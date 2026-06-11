@@ -244,10 +244,6 @@ class AfirmaHTTPHandler(BaseHTTPRequestHandler):
                 f"preview={repr(result)[:120]}",
             )
 
-            # Limpiar la URL acumulada después de la última parte
-            if part == total:
-                AfirmaHTTPHandler.url_fragments = ""
-
             # Codificar el resultado en base64
             if result is None:
                 result_b64 = ""
@@ -257,6 +253,13 @@ class AfirmaHTTPHandler(BaseHTTPRequestHandler):
                 result_b64 = base64.b64encode(result).decode()
             else:
                 result_b64 = str(result)
+
+            # Solo limpiar la URL acumulada si hay un resultado real.
+            # Si result_b64 está vacío (el usuario aún no ha desbloqueado
+            # el certificado), mantenemos la URL para que el navegador
+            # pueda reintentar en el siguiente poll.
+            if part == total and result_b64:
+                AfirmaHTTPHandler.url_fragments = ""
 
             self._log(
                 f"HTTP result part {part}/{total}: {len(result_b64)} chars base64"

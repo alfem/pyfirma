@@ -1330,18 +1330,25 @@ class App(customtkinter.CTk):
 
         if not cert_file:
             self.after(0, lambda: self.log_event(
-                "error", "Petición de firma rechazada: no hay certificado cargado."))
-            return "SAF_ERROR:No certificate loaded"
+                "event", "Petición de firma en espera: falta certificado."))
+            self.after(0, lambda: self.status_label.configure(
+                text="Seleccione un certificado (.p12/.pfx)", text_color="orange"))
+            self.after(0, self.select_cert)  # Abrir automáticamente el diálogo
+            return ""  # Vacío = no respondemos aún, el navegador reintentará
         if not password:
             self.after(0, lambda: self.log_event(
-                "error", "Petición de firma rechazada: falta la contraseña."))
+                "event", "Petición de firma en espera: falta contraseña."))
             self.after(0, lambda: self.status_label.configure(
-                text="Introduzca la contraseña del certificado", text_color="orange"))
-            return "SAF_ERROR:No certificate loaded"
+                text="Introduzca y confirme la contraseña del certificado",
+                text_color="orange"))
+            return ""  # Vacío = no respondemos aún
         if not self.password_confirmed and not self.cache_pass_var.get():
             self.after(0, lambda: self.log_event(
-                "error", "Petición de firma rechazada: contraseña no confirmada."))
-            return "SAF_ERROR:Password not confirmed"
+                "event", "Petición de firma en espera: contraseña sin confirmar."))
+            self.after(0, lambda: self.status_label.configure(
+                text="Pulse 'Aceptar' para confirmar la contraseña",
+                text_color="orange"))
+            return ""  # Vacío = no respondemos aún
 
         # Cargar certificado
         from signer import load_certificate
