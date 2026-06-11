@@ -20,7 +20,9 @@ python main.py
 
 Esto abrirá la ventana de la aplicación donde podrás seleccionar el archivo PDF, el certificado y realizar la firma de manera visual.
 
-Puede seleccionar la casilla **"Add Visible Signature"** para añadir un sello visible en la primera página del documento con el nombre del firmante y la fecha.
+Puedes seleccionar la casilla **"Añadir firma visible"** para añadir un sello visible en la primera página del documento con el nombre del firmante y la fecha.
+
+<img src="https://raw.githubusercontent.com/alfem/pyfirma/refs/heads/main/pyfirma1.png" width=50%>
 
 ### Línea de Comandos
 
