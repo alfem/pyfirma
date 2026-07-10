@@ -981,10 +981,14 @@ class App(customtkinter.CTk):
             # ================================================================
             if fmt.startswith('XADES'):
                 from xades_signer import sign_xades
+                from cryptography.hazmat.primitives import serialization
+
+                cert_der = certificate.public_bytes(serialization.Encoding.DER)
+                cert_b64 = self._encode_urlsafe_b64(cert_der)
 
                 signed_data = sign_xades(pdf_data, private_key, certificate)
                 b64_urlsafe = self._encode_urlsafe_b64(signed_data)
-                b64_response = "|" + b64_urlsafe
+                b64_response = cert_b64 + "|" + b64_urlsafe
 
                 self.after(
                     0,
@@ -1004,12 +1008,19 @@ class App(customtkinter.CTk):
             elif fmt.startswith('CADES'):
                 from endesive import plain, signer
                 from asn1crypto import cms
+                from cryptography.hazmat.primitives import serialization
+
+                # Obtener certificado DER para incluir en la respuesta.
+                # Java AutoFirma: base64(cert)|base64(signature)
+                # batchScript.js pasa certificateB64 al callback final.
+                cert_der = certificate.public_bytes(serialization.Encoding.DER)
+                cert_b64 = self._encode_urlsafe_b64(cert_der)
 
                 # Detectar hash precalculado (SHA-256 = 32 bytes).
-                # Para documentos grandes, la webapp envía el hash
-                # en lugar del documento porque no cabe en la URL.
                 if len(pdf_data) == 32:
-                    # Usar el hash como signed_value precalculado
+                    # Usar el hash como signed_value precalculado.
+                    # NO se embebe en eContent — es una firma detached
+                    # donde el hash se valida externamente.
                     signed_data = signer.sign(
                         b'', private_key, certificate,
                         additional_certificates, hashalgo='sha256',
@@ -1017,15 +1028,11 @@ class App(customtkinter.CTk):
                     )
                     is_hash = True
                 else:
-                    # Firmar con endesive.plain (produce CMS detached)
                     signed_data = plain.sign(
                         pdf_data, private_key, certificate,
                         additional_certificates, hashalgo='sha256',
                         attrs=True,
                     )
-
-                    # Embeber los datos originales en el CMS
-                    # (convierte detached → attached/explícito)
                     from asn1crypto.core import OctetString
                     ci = cms.ContentInfo.load(signed_data)
                     ci['content']['encap_content_info']['content'] = \
@@ -1034,14 +1041,15 @@ class App(customtkinter.CTk):
                     is_hash = False
 
                 b64_urlsafe = self._encode_urlsafe_b64(signed_data)
-                b64_response = "|" + b64_urlsafe
+                b64_response = cert_b64 + "|" + b64_urlsafe
 
                 self.after(
                     0,
                     lambda d=signed_data, h=is_hash: self.log_event(
                         "event",
                         f"CAdES {'(hash precalculado)' if h else ''}"
-                        f" firmado y enviado ({len(d)} bytes)",
+                        f" firmado y enviado ({len(d)} bytes, "
+                        f"cert {len(cert_der)} bytes DER)",
                     ),
                 )
 
@@ -1054,6 +1062,10 @@ class App(customtkinter.CTk):
             elif fmt.startswith('PADES') or fmt == 'PDF':
                 import datetime
                 import endesive.pdf.cms
+                from cryptography.hazmat.primitives import serialization
+
+                cert_der = certificate.public_bytes(serialization.Encoding.DER)
+                cert_b64 = self._encode_urlsafe_b64(cert_der)
 
                 # Preparar la fecha de firma
                 date = datetime.datetime.now(datetime.timezone.utc)
@@ -1078,7 +1090,7 @@ class App(customtkinter.CTk):
                 # El PDF firmado = datos originales + firma CMS
                 signed_data = pdf_data + signature
                 b64_urlsafe = self._encode_urlsafe_b64(signed_data)
-                b64_response = "|" + b64_urlsafe
+                b64_response = cert_b64 + "|" + b64_urlsafe
 
                 self.after(
                     0,
@@ -1495,14 +1507,17 @@ class App(customtkinter.CTk):
             else:
                 return f"SAF_ERROR:Unsupported format: {fmt}"
 
-            # Codificar en base64 URL-safe y devolver con prefijo '|'
-            # (mismo formato que el modo WebSocket)
+            # Codificar en base64 URL-safe con certificado
+            # Formato Java AutoFirma: base64(cert)|base64(signature)
+            from cryptography.hazmat.primitives import serialization
+            cert_der = certificate.public_bytes(serialization.Encoding.DER)
+            cert_b64 = self._encode_urlsafe_b64(cert_der)
             b64 = self._encode_urlsafe_b64(signed_data)
             self.after(0, lambda: self.log_event(
                 "event", f"Firma HTTP completada ({len(signed_data)} bytes)"))
             self.after(0, lambda: self.status_label.configure(
                 text="Firma enviada al navegador", text_color="green"))
-            return "|" + b64
+            return cert_b64 + "|" + b64
 
         except Exception as e:
             _dbg(f"SIGN_ERROR: {type(e).__name__}: {e}")
@@ -1763,14 +1778,20 @@ class App(customtkinter.CTk):
                     pdf_data = f.read()
 
                 b64 = self._encode_urlsafe_b64(pdf_data)
-                # El prefijo '|' imita el formato de Java AutoFirma:
-                # signature|certificate. autoscript.js divide por '|':
-                #   parte1 → certificate (2º param callback),
-                #   parte2 → signature (1er param callback).
-                # Con "|b64", los datos firmados llegan como 1er param
-                # y se mantienen como texto base64 (sin decodificar
-                # a binario), evitando corrupción UTF-8 en la URL de guardado.
-                self.ws_server.send_response("|" + b64)
+                # Formato Java AutoFirma: base64(cert)|base64(signature)
+                # Obtener el certificado DER para incluirlo en la respuesta
+                cert_b64 = ""
+                try:
+                    from signer import load_certificate
+                    from cryptography.hazmat.primitives import serialization
+                    _, cert, _ = load_certificate(
+                        self.cert_file, self.pass_entry.get()
+                    )
+                    cert_der = cert.public_bytes(serialization.Encoding.DER)
+                    cert_b64 = self._encode_urlsafe_b64(cert_der)
+                except Exception:
+                    pass
+                self.ws_server.send_response(cert_b64 + "|" + b64)
                 self.pending_sign_request = False
                 # Restaurar la interfaz limpia del interceptor
                 self._hide_local_signing_widgets()

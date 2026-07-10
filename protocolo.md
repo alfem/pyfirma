@@ -93,9 +93,30 @@ afirma://service?ports=55123,55124,55125
 ## 3. Modos de transporte
 
 PyFirma soporta dos modos de transporte simultáneos, que se ejecutan
-en hilos independientes:
+en hilos independientes.
 
-### 3.1. Modo WebSocket (`ws_server.py`)
+### 3.1. Asignación de puertos
+
+El navegador (`autoscript.js`) genera 3 puertos aleatorios y los envía
+en la URL `afirma://`. PyFirma los reparte de forma **determinista**:
+
+```
+Puertos recibidos:       [A, B, C]
+                          │   └─┬──┘
+                          ▼      ▼
+Servidor WSS (WebSocket): A    HTTP (JSSocket): B, C
+```
+
+- **WSS** recibe `ports[0]` — el primer puerto, que es el primero que
+  el navegador prueba al conectar.
+- **HTTP (JSSocket)** recibe `ports[1:]` — los puertos restantes.
+
+Este reparto evita la condición de carrera que ocurría al arrancar
+ambos servidores en paralelo con la misma lista de puertos, donde el
+servidor HTTP podía ocupar el primer puerto y el navegador fallaba al
+intentar el handshake WebSocket contra un servidor que solo habla HTTP.
+
+### 3.2. Modo WebSocket (`ws_server.py`)
 
 El navegador abre una conexión WebSocket a `ws://127.0.0.1:PUERTO`
 (o `wss://` si hay TLS) y envía las operaciones como mensajes de texto.
@@ -103,11 +124,12 @@ El navegador abre una conexión WebSocket a `ws://127.0.0.1:PUERTO`
 | Característica | Valor |
 |---|---|
 | Biblioteca | `websockets` (Python) |
-| Puerto | Primer disponible de la lista |
+| Puerto | `ports[0]` (primer puerto de la lista) |
 | TLS | Activado si existen `cert.pem` y `key.pem` |
 | Ping/Pong | Cada 30 s (keepalive) |
 | Tamaño máximo mensaje | 50 MB (`max_size`) |
 | Timeout cierre | 5 s (`close_timeout`) |
+| Interfaz | `0.0.0.0` (todas las interfaces, necesario para Firefox snap) |
 
 **Handshake inicial (echo):**
 ```
@@ -115,11 +137,16 @@ Cliente → Servidor:  echo=-idsession=ABC123@EOF
 Servidor → Cliente:  echo
 ```
 
-### 3.2. Modo HTTP / JSSocket (`http_server.py`)
+### 3.3. Modo HTTP / JSSocket (`http_server.py`)
 
 Algunos sitios web (p.ej. Valide) usan el modo JSSocket en lugar de
 WebSocket. En este modo, el navegador envía peticiones HTTP POST al
 endpoint `https://127.0.0.1:PUERTO/afirma`.
+
+| Característica | Valor |
+|---|---|
+| Puerto | `ports[1:]` (puertos restantes tras el WSS) |
+| Interfaz | `0.0.0.0` (necesario para Firefox snap) |
 
 Todas las respuestas incluyen cabeceras CORS:
 ```
@@ -218,17 +245,22 @@ afirma://sign?format=PAdES&algorithm=sha256&dat=UEsDBBQAAAAIAL...
 
 **Formato de respuesta:**
 ```
-|<base64_urlsafe_del_documento_firmado>
+<base64url_certificado_DER>|<base64url_documento_firmado>
 ```
 
-El prefijo `|` imita el formato de Java AutoFirma:
-`signature|certificate`. `autoscript.js` divide por `|`:
-- `parte[0]` → `signature` (1er parámetro del callback JS)
-- `parte[1]` → `certificate` (2º parámetro del callback JS)
+Este formato replica el de Java AutoFirma: `signature|certificate`.
+`autoscript.js` divide por `|` y pasa al callback JS:
+- `parte[0]` → certificate (2º parámetro del callback)
+- `parte[1]` → signature (1er parámetro del callback)
 
-Con `"|" + b64`, los datos firmados llegan como texto base64 al
-1er parámetro del callback, evitando la decodificación a binario
-que causaría corrupción UTF-8 en la URL de guardado posterior.
+**Incluir el certificado es crítico para la firma por lotes** (batch).
+`batchScript.js` recibe `certificateB64` en el callback `signMassive()`
+y lo reenvía al callback final `BatchScript.callBackFunction()`.
+Si el certificado está vacío, el sitio web puede rechazar la operación
+completa (error HTTP 500 en `doSign`).
+
+En versiones anteriores de PyFirma se enviaba `|<firma>` con el
+certificado vacío, lo que causaba errores en webs con batch.
 
 ### 5.2. `cosign` — Cofirma
 
@@ -273,8 +305,58 @@ afirma://save?filename=documento&ext=pdf&title=Guardar+fichero&dat=...
 
 ### 5.6. `batch` — Firma por lotes
 
-Operación de firma múltiple. Actualmente registrada en el log pero
-no implementada completamente.
+La firma por lotes permite firmar múltiples documentos en una sola
+operación. En escritorio, NO se usa el comando `batch` del protocolo
+WebSocket — en su lugar, `batchScript.js` implementa un bucle recursivo
+que envía operaciones `sign` individuales.
+
+**Flujo en escritorio (`doMassiveSign` → `signMassive` recursivo):**
+
+```
+1. doMassiveSign()
+     └─ massiveIndex = 0
+     └─ AutoScript.setStickySignatory(true)
+     └─ signMassive()
+
+2. signMassive(undefined, undefined)          ← primera llamada (sin args)
+     └─ AutoScript.sign(data[0], algo, fmt, params, signMassive, errorCb)
+
+3. PyFirma firma → responde "cert_b64|sig_b64"
+
+4. signMassive(sig1_b64, cert1_b64)          ← callback con resultado
+     └─ massiveIndex++ → 1
+     └─ "Firma masiva [1] OK"
+     └─ massiveResult = sig1_b64
+     └─ AutoScript.sign(data[1], algo, fmt, params, signMassive, errorCb)
+
+5. PyFirma firma → responde "cert_b64|sig2_b64"
+
+6. signMassive(sig2_b64, cert2_b64)          ← callback con resultado
+     └─ massiveIndex++ → 2
+     └─ "Firma masiva [2] OK"
+     └─ massiveResult = "sig1:sig2"
+     └─ data[2] == undefined → FIN
+
+7. BatchScript.callBackFunction("sig1:sig2", cert2_b64)
+     └─ El sitio web recibe las firmas concatenadas con ":"
+     └─ El certificado viene del último signMassive (cert2_b64)
+```
+
+**Puntos clave descubiertos:**
+
+- **`stickySignatory(true)`**: Fija el certificado para todas las firmas
+  del lote. El usuario no tiene que reconfirmar para cada documento.
+- **`certificateB64` en el callback**: `AutoScript.sign()` pasa
+  `(firma_b64, cert_b64)` al callback. Si PyFirma no incluye el
+  certificado en la respuesta, `cert_b64` queda vacío y el callback
+  final recibe un certificado nulo, causando error en el servidor.
+- **Concatenación con `:`**: Las firmas se unen con `:` antes de
+  enviarse al servidor en `doSign`.
+- **Modo móvil**: En Android/iOS se usa `AutoScript.signBatchProcess()`
+  con servidores trifásicos (preSign/postSign), en lugar del bucle
+  recursivo. PyFirma aún no soporta este modo.
+- **`multiModeSign`**: Es un wrapper que mapea parámetros de
+  `multiModeSign` a `doSignBatch` y llama a esta última.
 
 ### 5.7. `selectcert` — Selección de certificado
 
@@ -386,13 +468,37 @@ como base64 dentro de un elemento `<DocumentData>`.
 |---|---|
 | Biblioteca | `endesive.plain` + `asn1crypto.cms` |
 | Algoritmo hash | SHA-256 |
-| Modo | Attached/Explícito (datos embeebidos) |
+| Modo | Attached/Explícito (datos embeebidos en eContent) |
 
-**Flujo de firma:**
+**Flujo de firma para datos completos:**
 1. `endesive.plain.sign()` produce un CMS detached (sin los datos).
 2. Se parsea el CMS con `asn1crypto.cms.ContentInfo`.
 3. Se embeeben los datos originales en `encap_content_info['content']`.
 4. Se vuelca el CMS completo con `ci.dump()`.
+
+**Modo hash precalculado (pdf_size == 32 bytes):**
+
+Para documentos grandes, la webapp no envía el documento completo
+(no cabe en la URL). En su lugar envía el hash SHA-256 del documento
+(32 bytes) en el parámetro `dat`.
+
+```python
+# Detección: si dat son exactamente 32 bytes → es un hash SHA-256
+if len(pdf_data) == 32:
+    signed_data = signer.sign(
+        b'', private_key, certificate,             # contenido vacío
+        additional_certificates, hashalgo='sha256',
+        attrs=True, signed_value=pdf_data,         # hash precalculado
+    )
+    # NO se embebe en eContent — firma detached
+```
+
+**Importante:** En modo hash, el CMS resultante es una firma **detached**
+(sin `eContent`). El hash se pasa como `signed_value` a `endesive` y
+se incluye en los atributos firmados (`messageDigest`). NO debe
+embeberse en `EncapsulatedContentInfo.content` — si se hace, el
+`messageDigest` se recalcula sobre el valor embebido (hash del hash)
+y el servidor de validación lo rechaza.
 
 ---
 
@@ -449,7 +555,7 @@ completamente el problema de codificación.
 | Respuesta | Significado | Cuándo se envía |
 |---|---|---|
 | `echo` | Conexión WebSocket confirmada | Tras recibir `echo=...@EOF` |
-| `\|<b64>` | Documento firmado (base64 URL-safe) | Tras `sign`/`cosign`/`countersign` exitoso |
+| `<cert_b64>\|<sig_b64>` | Firma + certificado (base64 URL-safe) | Tras `sign`/`cosign`/`countersign` exitoso |
 | `OK` | Operación de guardado exitosa | Tras `save` completado |
 | `CANCEL` | Usuario canceló la operación | Diálogo cancelado, contraseña faltante |
 | `SAF_NO_DATA` | Falta el parámetro `dat` | `save` o `sign` sin datos |
@@ -485,11 +591,49 @@ de trabajo, ambos servidores se inician con TLS:
 | WebSocket | `ws://127.0.0.1:PUERTO` | `wss://127.0.0.1:PUERTO` |
 | HTTP | `http://127.0.0.1:PUERTO` | `https://127.0.0.1:PUERTO` |
 
-Para generar certificados de desarrollo:
-```bash
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem \
-  -days 365 -nodes -subj "/CN=localhost"
+### 10.1. Cadena de confianza TLS (rootCA + cert.pem)
+
+Para que Firefox acepte la conexión WSS **sin pedir confirmación manual
+en cada puerto nuevo**, el certificado del servidor debe estar firmado
+por una CA de confianza, no ser autofirmado:
+
 ```
+rootCA.pem (CA raíz, instalada en Firefox como Autoridad)
+    │
+    └── firma a cert.pem (certificado del servidor TLS)
+```
+
+Si `cert.pem` es autofirmado, Firefox muestra la advertencia de
+seguridad cada vez que PyFirma arranca en un puerto nuevo (los
+puertos son aleatorios y cambian en cada invocación).
+
+**Generación de la cadena:**
+```bash
+# 1. CA raíz (solo una vez)
+openssl req -x509 -newkey rsa:4096 -keyout rootCA.key -out rootCA.pem \
+  -days 3650 -nodes -subj "/CN=PyFirma Root CA/O=PyFirma"
+# Instalar rootCA.pem en Firefox como Autoridad de confianza
+
+# 2. Certificado de servidor (firmado por la CA)
+openssl req -new -newkey rsa:4096 -keyout server-key.pem -out server.csr \
+  -nodes -subj "/CN=localhost/O=PyFirma" \
+  -addext "subjectAltName=IP:127.0.0.1"
+openssl x509 -req -in server.csr -CA rootCA.pem -CAkey rootCA.key \
+  -CAcreateserial -out cert.pem -days 3650 -copy_extensions copy
+
+# 3. Verificar
+openssl verify -CAfile rootCA.pem cert.pem
+```
+
+El script `regenerar-cert.sh` automatiza estos pasos.
+
+### 10.2. Snap Firefox y `0.0.0.0`
+
+Firefox en Ubuntu 24.04 se instala como paquete **snap** con
+aislamiento de red. Los servidores de PyFirma deben escuchar en
+`0.0.0.0` (todas las interfaces) en lugar de solo `127.0.0.1` para
+que Firefox snap pueda alcanzarlos. Con `127.0.0.1`, Firefox muestra
+"no puede establecer una conexión con el servidor en wss://127.0.0.1:...".
 
 ---
 
@@ -606,7 +750,77 @@ El visor de logs de la GUI (modo interceptor) muestra:
 
 ---
 
-## 14. Referencias
+## 14. Versiones de `autoscript.js`
+
+El script que corre en el navegador (`autoscript.js`) existe en varias
+versiones con diferencias relevantes:
+
+| Versión | `VERSION` | `URL_REQUEST_PREFIX` | PROTOCOL_VERSION |
+|---------|-----------|---------------------|-----------------|
+| 1.8.2.1 | `"1.8.2.1"` | `wss://` | 4 |
+| 1.9.0 | `"1.9.0"` | `ws://` o `wss://` | 4 |
+
+**Diferencias clave:**
+
+- **Prefijo WebSocket:** La v1.9.0 original usa `ws://` (plano),
+  pero en páginas HTTPS el navegador bloquea conexiones `ws://` como
+  contenido mixto. Algunas webs (p.ej. Junta de Andalucía) sirven una
+  v1.9.0 modificada con `wss://`.
+- **`PROTOCOL_VERSION` 4:** Ambas versiones usan protocolo v4.
+  El servidor debe responder correctamente al handshake echo y a los
+  formatos de respuesta `cert|firma`.
+- **JSSocket:** Ambas versiones usan `https://127.0.0.1:PUERTO/afirma`
+  independientemente del prefijo WebSocket.
+- **`batchScript.js`:** Es un script adicional (v1.0.1) que implementa
+  la firma por lotes sobre `autoscript.js`. En escritorio usa
+  `signMassive()` recursivo; en móvil usa `signBatchProcess()` con
+  servidores trifásicos.
+
+---
+## 15. Nuevos errores y soluciones
+
+### 15.1. `SEC_ERROR_TOKEN_NOT_LOGGED_IN` al instalar certificado
+
+**Causa:** Firefox tiene activada la **contraseña maestra**. `certutil`
+no puede modificar los trust flags del certificado en la base de datos
+NSS sin autenticarse.
+
+**Solución:**
+1. Desactivar temporalmente la contraseña maestra en Firefox.
+2. Ejecutar `certutil -A` o el instalador de PyFirma.
+3. Reactivar la contraseña maestra.
+
+### 15.2. Error HTTP 500 del servidor tras firma batch
+
+**Causa:** El servidor remoto (ej. `api-veaja.cloud.juntadeandalucia.es`)
+rechaza la operación `doSign`. Posibles causas:
+- El certificado del firmante no estaba incluido en la respuesta
+  WebSocket (corregido: ahora se envía `cert_b64|firma_b64`).
+- El CMS tiene una estructura diferente a la esperada (ej. hash
+  embebido en eContent cuando debería ser detached).
+- El certificado del firmante no cumple los requisitos del organismo.
+
+**Diagnóstico:** Revisar la consola del navegador. Si aparecen
+`"Firma masiva [N] OK"` para todos los documentos pero el POST
+a `doSign` devuelve 500, el problema está en el formato de la firma
+o en la validación del servidor, no en la conexión.
+
+### 15.3. "no puede establecer una conexión con wss://127.0.0.1:..."
+
+**Causas posibles (orden de probabilidad):**
+
+1. **Firefox snap** no puede alcanzar `127.0.0.1` del host → el
+   servidor debe escuchar en `0.0.0.0`.
+2. **Certificado TLS no confiable** → instalar `rootCA.pem` en
+   Firefox (Ajustes → Privacidad → Certificados → Autoridades).
+3. **`cert.pem` autofirmado** en vez de firmado por la CA → usar
+   `regenerar-cert.sh`.
+4. **Conflicto de puertos** con el servidor HTTP → el reparto
+   determinista de puertos (WSS=`ports[0]`, HTTP=`ports[1:]`)
+   soluciona esto.
+
+---
+## 16. Referencias
 
 | Estándar | Descripción |
 |---|---|
