@@ -127,14 +127,21 @@ class App(customtkinter.CTk):
             # Modo interceptor: ampliar ventana y arrancar servidores
             self.setup_interceptor_addons()
             if self.afirma_ports and ws_server:
-                # Iniciar servidor WebSocket
+                # Repartir puertos: WSS usa el primero, HTTP los restantes.
+                # Así se evita que el servidor HTTP (JSSocket) ocupe
+                # el primer puerto y el navegador falle al intentar
+                # el handshake WebSocket contra un servidor que solo habla HTTP.
+                wss_ports = [self.afirma_ports[0]]
+                http_ports = self.afirma_ports[1:] if len(self.afirma_ports) > 1 else []
+
+                # Iniciar servidor WebSocket en el primer puerto
                 self.ws_server = ws_server.start_server_thread(
-                    self.afirma_ports, self.on_ws_event
+                    wss_ports, self.on_ws_event
                 )
-                # También iniciar servidor HTTPS para modo JSSocket
-                if start_http_server_thread:
+                # Iniciar servidor HTTPS (JSSocket) en los puertos restantes
+                if start_http_server_thread and http_ports:
                     self.http_server = start_http_server_thread(
-                        self.afirma_ports, self.on_ws_event,
+                        http_ports, self.on_ws_event,
                         op_handler=self.process_http_operation,
                     )
             # Iniciar el polling de redirecciones (instancia única)
@@ -545,19 +552,23 @@ class App(customtkinter.CTk):
                         ]
                         if ports and ws_server:
                             self.afirma_ports = ports
-                            # Arrancar nuevo servidor WebSocket en los puertos
+                            # Repartir puertos: WSS usa el primero, HTTP los restantes
+                            wss_ports = [ports[0]]
+                            http_ports = ports[1:] if len(ports) > 1 else []
+
+                            # Arrancar nuevo servidor WebSocket en el primer puerto
                             self.ws_server = ws_server.start_server_thread(
-                                ports, self.on_ws_event
+                                wss_ports, self.on_ws_event
                             )
-                            # También servidor HTTP (JSSocket)
-                            if start_http_server_thread:
+                            # Servidor HTTP (JSSocket) en los puertos restantes
+                            if start_http_server_thread and http_ports:
                                 self.http_server = start_http_server_thread(
-                                    ports, self.on_ws_event,
+                                    http_ports, self.on_ws_event,
                                     op_handler=self.process_http_operation,
                                 )
                             self.log_event(
                                 "event",
-                                f"Petición redirigida: nuevos servidores en puertos {ports}",
+                                f"Petición redirigida: nuevos servidores en puertos {wss_ports + http_ports}",
                             )
         except Exception:
             pass

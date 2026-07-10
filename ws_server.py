@@ -303,7 +303,7 @@ class AfirmaWebSocketServer:
                 # Iniciar el servidor websockets
                 self.server = await websockets.serve(
                     self.handle_client,
-                    "127.0.0.1",
+                    "0.0.0.0",
                     port,
                     ssl=ssl_context,
                     ping_interval=30,         # Mantener viva la conexión cada 30s

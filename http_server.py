@@ -412,7 +412,7 @@ class AfirmaHTTPServer:
 
         for port in self.ports:
             try:
-                self.httpd = HTTPServer(("127.0.0.1", port), AfirmaHTTPHandler)
+                self.httpd = HTTPServer(("0.0.0.0", port), AfirmaHTTPHandler)
 
                 # Envolver con SSL si hay certificados disponibles
                 if os.path.exists("cert.pem") and os.path.exists("key.pem"):
